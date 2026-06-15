@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: aegis-messenger
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NVIDIA_API_URL
+        value: https://integrate.api.nvidia.com/v1/chat/completions
+      - key: NVIDIA_MODEL
+        value: google/diffusiongemma-26b-a4b-it
+      - key: NVIDIA_API_KEY
+        sync: false
