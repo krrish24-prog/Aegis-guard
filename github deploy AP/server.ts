@@ -61,7 +61,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const HOST = process.env.HOST || "0.0.0.0";
 
-  app.use(express.json({ limit: "12mb" }));
+  app.use(express.json({ limit: "16mb" }));
   app.use("/api", requireFirebaseAuth);
 
   const DEFAULT_MAX_TOKENS = 220;
@@ -177,6 +177,41 @@ async function startServer() {
     return fenced ? fenced[1].trim() : trimmed;
   };
 
+  const extractJsonObject = (value: string): Record<string, any> | null => {
+    const cleaned = stripJsonFence(value).replace(/^\s*json\s*/i, "");
+    try {
+      const parsed = JSON.parse(cleaned);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      // NVIDIA may wrap the object in prose or markdown.
+    }
+
+    for (let start = cleaned.indexOf("{"); start >= 0; start = cleaned.indexOf("{", start + 1)) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = start; i < cleaned.length; i++) {
+        const char = cleaned[i];
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (char === "\\") escaped = true;
+          else if (char === '"') inString = false;
+          continue;
+        }
+        if (char === '"') inString = true;
+        else if (char === "{") depth++;
+        else if (char === "}" && --depth === 0) {
+          try {
+            return JSON.parse(cleaned.slice(start, i + 1));
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
   // API wrapper for Aegis Guard Chat
   app.post("/api/chat", async (req, res) => {
     try {
@@ -256,7 +291,7 @@ async function startServer() {
         return aiUnavailableResponse(res, FAIL_CLOSED_ANALYSIS);
       }
       
-      const systemPrompt = `You are a Cybersecurity Analyst. Respond with MINIMAL JSON.
+      const systemPrompt = `You are a Cybersecurity Analyst. Return exactly one valid JSON object with no markdown or commentary.
 
       1. STEGANOGRAPHY (Images): Look for LSB manipulation or spectral noise signaling hidden payloads. Extract, decode, and put result in 'steganographyReport'.
       2. CRYPTOGRAPHY:
@@ -294,8 +329,23 @@ async function startServer() {
       ];
 
       const response = await createAICompletion({ messages, maxTokens: 260 });
+      const raw = extractResponseText(response);
+      const parsed = extractJsonObject(raw);
+      if (!parsed) {
+        console.warn("NVIDIA returned unstructured analysis:", raw.slice(0, 500));
+        return res.status(502).json({ text: FAIL_CLOSED_ANALYSIS });
+      }
 
-      res.json({ text: stripJsonFence(extractResponseText(response) || '{}') });
+      const isSafe = parsed.isSafe === true;
+      const score = Math.max(0, Math.min(100, Number(parsed.score) || 0));
+      res.json({ text: JSON.stringify({
+        isSafe,
+        score: isSafe && score === 0 ? 100 : score,
+        threatType: isSafe ? "none" : cleanText(parsed.threatType, 50) || "unknown",
+        summary: cleanText(parsed.summary, 500) || "Analysis completed.",
+        points: Array.isArray(parsed.points) ? parsed.points.slice(0, 8).map((point: unknown) => cleanText(point, 300)) : [],
+        steganographyReport: cleanText(parsed.steganographyReport, 1_000) || "N/A",
+      }) });
     } catch (error: any) {
       if (error?.status === 429 || error?.status === 404 || error?.status === 503) {
         res.status(503).json({ text: FAIL_CLOSED_ANALYSIS });
