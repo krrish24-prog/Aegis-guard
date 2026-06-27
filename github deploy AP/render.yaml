@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: aegis-messenger
+    name: github-deploy-ap
     runtime: node
     plan: free
     buildCommand: npm ci && npm run build
@@ -13,5 +13,23 @@ services:
         value: https://integrate.api.nvidia.com/v1/chat/completions
       - key: NVIDIA_MODEL
         value: google/diffusiongemma-26b-a4b-it
+      - key: AI_MAX_TOKENS
+        value: "650"
       - key: NVIDIA_API_KEY
+        sync: false
+      - key: APPWRITE_ENDPOINT
+        value: https://fra.cloud.appwrite.io/v1
+      - key: APPWRITE_PROJECT_ID
+        sync: false
+      - key: APPWRITE_API_KEY
+        sync: false
+      - key: APPWRITE_BUCKET_ID
+        value: aegis-media
+      - key: GOOGLE_CALENDAR_ID
+        value: primary
+      - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+        sync: false
+      - key: GOOGLE_CALENDAR_IMPERSONATE
         sync: false
