@@ -1,0 +1,171 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer utilities {
+  .glow-emerald {
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+    border: 1px solid rgba(16, 185, 129, 0.5);
+  }
+  .glow-emerald-side {
+    position: relative;
+  }
+  .glow-emerald-side::after {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 20%;
+    height: 60%;
+    width: 3px;
+    background: #10b981;
+    border-radius: 99px;
+    box-shadow: 0 0 10px #10b981;
+    animation: glow-pulse 2s infinite alternate;
+  }
+  .glow-emerald-ring {
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2), 0 0 15px rgba(16, 185, 129, 0.4);
+  }
+  .glow-emerald-lg {
+    box-shadow: 0 0 25px rgba(16, 185, 129, 0.6);
+  }
+  .glow-blue {
+    box-shadow: 0 0 15px rgba(59, 130, 246, 0.4);
+  }
+  .glow-blue-lg {
+    box-shadow: 0 0 25px rgba(59, 130, 246, 0.6);
+  }
+  .glow-purple {
+    box-shadow: 0 0 15px rgba(168, 85, 247, 0.4);
+  }
+  .glow-purple-lg {
+    box-shadow: 0 0 25px rgba(168, 85, 247, 0.6);
+  }
+  .animate-glow {
+    animation: glow 2s infinite alternate;
+  }
+  .animate-glow-blue {
+    animation: glow-blue 2s infinite alternate;
+  }
+  .animate-glow-purple {
+    animation: glow-purple 2s infinite alternate;
+  }
+}
+
+@keyframes glow {
+  from {
+    box-shadow: 0 0 5px rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.3);
+  }
+  to {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.6);
+    border-color: rgba(16, 185, 129, 0.8);
+  }
+}
+
+@keyframes glow-pulse {
+  from { opacity: 0.5; transform: scaleY(0.8); }
+  to { opacity: 1; transform: scaleY(1.2); }
+}
+
+@keyframes glow-blue {
+  from {
+    box-shadow: 0 0 5px rgba(59, 130, 246, 0.2);
+  }
+  to {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+  }
+}
+
+@keyframes glow-purple {
+  from {
+    box-shadow: 0 0 5px rgba(168, 85, 247, 0.2);
+  }
+  to {
+    box-shadow: 0 0 20px rgba(168, 85, 247, 0.6);
+  }
+}
+
+body {
+  @apply bg-zinc-50 text-zinc-900 antialiased;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-zinc-200 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-zinc-300;
+}
+
+/* Markdown styling */
+.markdown-body ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.markdown-body ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.markdown-body strong {
+  font-weight: 700;
+}
+.markdown-body p {
+  margin-bottom: 0.5rem;
+}
+.markdown-body p:last-child {
+  margin-bottom: 0;
+}
+.markdown-body code {
+  @apply bg-black/10 px-1 py-0.5 rounded font-mono text-sm;
+}
+.markdown-body pre code {
+  @apply bg-transparent p-0 text-inherit;
+}
+.markdown-body pre {
+  @apply bg-black/80 text-white p-3 rounded-lg overflow-x-auto my-2;
+}
+
+/* Dark and Glow Theme Overrides */
+.theme-dark .text-zinc-900, .theme-glow .text-zinc-900 { color: #f4f4f5 !important; }
+.theme-dark .text-zinc-800, .theme-glow .text-zinc-800 { color: #e4e4e7 !important; }
+.theme-dark .text-zinc-700, .theme-glow .text-zinc-700 { color: #d4d4d8 !important; }
+.theme-dark .text-zinc-600, .theme-glow .text-zinc-600 { color: #a1a1aa !important; }
+.theme-dark .bg-zinc-900, .theme-glow .bg-zinc-900 { background-color: #18181b !important; }
+
+.theme-dark .bg-white, .theme-glow .bg-white { background-color: rgba(24, 24, 27, 0.6) !important; }
+.theme-dark .bg-zinc-50, .theme-glow .bg-zinc-50 { background-color: rgba(9, 9, 11, 0.8) !important; }
+.theme-dark .bg-zinc-100, .theme-glow .bg-zinc-100 { background-color: rgba(39, 39, 42, 0.6) !important; }
+.theme-dark .bg-zinc-200, .theme-glow .bg-zinc-200 { background-color: rgba(63, 63, 70, 0.6) !important; }
+.theme-dark .bg-emerald-50, .theme-glow .bg-emerald-50 { background-color: rgba(6, 78, 59, 0.3) !important; color: #34d399 !important; }
+
+.theme-dark .border-zinc-100, .theme-glow .border-zinc-100 { border-color: rgba(63, 63, 70, 0.3) !important; }
+.theme-dark .border-zinc-200, .theme-glow .border-zinc-200 { border-color: rgba(63, 63, 70, 0.5) !important; }
+.theme-dark .border-emerald-100, .theme-glow .border-emerald-100 { border-color: rgba(6, 78, 59, 0.5) !important; }
+
+/* Keep emerald text legible in dark modes */
+.theme-dark .text-emerald-700, .theme-glow .text-emerald-700 { color: #34d399 !important; }
+.theme-dark .text-emerald-600, .theme-glow .text-emerald-600 { color: #10b981 !important; }
+.theme-dark .text-indigo-600, .theme-glow .text-indigo-600 { color: #818cf8 !important; }
+.theme-dark .bg-indigo-50, .theme-glow .bg-indigo-50 { background-color: rgba(49, 46, 129, 0.3) !important; color: #818cf8 !important; }
+
+/* Make dark elements match themes */
+.theme-glow .text-white { color: #ecfdf5 !important; }
+.theme-glow .bg-emerald-500 { background-color: #10b981 !important; box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); }
+

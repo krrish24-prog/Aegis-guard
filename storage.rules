@@ -1,0 +1,41 @@
+rules_version = '2';
+
+// Firestore database ID from firebase-applet-config.json (named database, not default).
+// Update this if your Firestore database ID changes.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function userEmail() {
+      return request.auth.token.email != null ? request.auth.token.email.lower() : '';
+    }
+
+    function isChatParticipant(chatId) {
+      return isAuthenticated()
+        && firestore.get(/databases/ai-studio-c34dfe88-d78f-410a-9620-5f5e105bf24b/documents/conversations/$(chatId))
+             .data.participants.hasAny([request.auth.uid, userEmail()]);
+    }
+
+    // Encrypted chat media (images, voice, files)
+    match /conversations/{chatId}/{allPaths=**} {
+      allow read: if isChatParticipant(chatId);
+      allow write: if isChatParticipant(chatId)
+        && request.resource.size < 50 * 1024 * 1024;
+    }
+
+    // Status story media — owner only (UID-scoped paths)
+    match /status/{userId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.size < 50 * 1024 * 1024;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

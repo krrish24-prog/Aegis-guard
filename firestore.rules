@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isAuthenticated() {
+      return request.auth != null && request.auth.token != null;
+    }
+
+    function getUserUid() {
+      return request.auth.uid;
+    }
+
+    function getUserEmail() {
+      return request.auth.token.email != null ? request.auth.token.email.lower() : '';
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.admin == true;
+    }
+
+    function isMe(identifier) {
+      return isAuthenticated() && identifier != null &&
+             (getUserUid() == identifier || getUserEmail() == string(identifier).lower());
+    }
+
+    function hasNoPrivateKey() {
+      return !request.resource.data.keys().hasAny(['privateKey']);
+    }
+
+    function isValidUser(data) {
+      return data.uid is string && data.email is string;
+    }
+
+    function isConversationParticipant(participants) {
+      return participants.hasAny([getUserUid(), getUserEmail()]);
+    }
+
+    function conversationDoc(chatId) {
+      return get(/databases/$(database)/documents/conversations/$(chatId));
+    }
+
+    function isMemberOfChat(chatId) {
+      return isAuthenticated()
+        && isConversationParticipant(conversationDoc(chatId).data.participants);
+    }
+
+    // Private user profiles — private keys must never be stored server-side
+    match /users/{userId} {
+      allow read: if isMe(userId) || isAdmin();
+      allow create: if isMe(userId) && isValidUser(request.resource.data) && hasNoPrivateKey();
+      allow update: if (isMe(userId) || isAdmin()) && isValidUser(request.resource.data) && hasNoPrivateKey();
+
+      match /contacts/{contactId} {
+        allow read, write: if isMe(userId) || isAdmin();
+      }
+    }
+
+    match /users_public/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isMe(userId);
+      allow update: if isMe(userId) || isAdmin();
+    }
+
+    match /conversations/{chatId} {
+      allow read: if isAuthenticated() && isConversationParticipant(resource.data.participants);
+      allow create: if isAuthenticated()
+        && isConversationParticipant(request.resource.data.participants);
+      allow update: if isAuthenticated()
+        && (isConversationParticipant(resource.data.participants) || isAdmin());
+
+      match /messages/{messageId} {
+        allow read: if isMemberOfChat(chatId) || isAdmin();
+
+        allow create: if isAuthenticated()
+          && (getUserUid() == request.resource.data.senderId
+              || request.resource.data.senderId == 'aegis-guard@aegis.ai')
+          && isMemberOfChat(chatId);
+
+        allow update: if (isMemberOfChat(chatId) || isAdmin());
+        allow delete: if (isMemberOfChat(chatId) || isAdmin());
+      }
+    }
+
+    match /feedback/{feedbackId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    match /scheduled_events/{eventId} {
+      allow read: if isAuthenticated()
+        && (getUserUid() in resource.data.participants || isAdmin());
+      allow create: if isAuthenticated()
+        && request.resource.data.creatorId == getUserUid();
+      allow update, delete: if isAuthenticated()
+        && (getUserUid() in resource.data.participants
+            || resource.data.creatorId == getUserUid()
+            || isAdmin());
+    }
+
+    match /status_updates/{statusId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated()
+        && (resource.data.userId == getUserUid() || !("userId" in resource.data));
+      allow delete: if isAuthenticated()
+        && (resource.data.userId == getUserUid() || isAdmin());
+    }
+
+    match /security_audit_logs/{logId} {
+      allow create: if isAuthenticated() && request.resource.data.userId == getUserUid();
+      allow read: if isAuthenticated() && (resource.data.userId == getUserUid() || isAdmin());
+      allow update, delete: if isAdmin();
+    }
+
+    match /devices/{deviceId} {
+      allow create: if isAuthenticated() && request.resource.data.userId == getUserUid();
+      allow read: if isAuthenticated() && (resource.data.userId == getUserUid() || isAdmin());
+      allow update, delete: if isAuthenticated() && (resource.data.userId == getUserUid() || isAdmin());
+    }
+
+    match /user_sessions/{sessionId} {
+      allow create: if isAuthenticated() && request.resource.data.userId == getUserUid();
+      allow read: if isAuthenticated() && (resource.data.userId == getUserUid() || isAdmin());
+      allow update, delete: if isAuthenticated() && (resource.data.userId == getUserUid() || isAdmin());
+    }
+
+    match /threat_intelligence/{reportId} {
+      allow read: if isAuthenticated()
+        && (resource.data.userId == getUserUid() || isAdmin());
+      allow create: if isAuthenticated() && request.resource.data.userId == getUserUid();
+      allow update: if isAuthenticated()
+        && (resource.data.userId == getUserUid() || isAdmin());
+    }
+
+    match /meeting_rooms/{roomId} {
+      allow read: if isAuthenticated()
+        && (getUserUid() in resource.data.participants || isAdmin());
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated()
+        && (getUserUid() in resource.data.participants
+            || request.resource.data.hostId == getUserUid()
+            || isAdmin());
+      allow delete: if isAuthenticated()
+        && (resource.data.hostId == getUserUid() || isAdmin());
+    }
+
+    match /call_sessions/{callId} {
+      allow read: if isAuthenticated()
+        && (resource.data.callerId == getUserUid()
+            || resource.data.calleeId == getUserUid()
+            || isAdmin());
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated()
+        && (resource.data.callerId == getUserUid()
+            || resource.data.calleeId == getUserUid()
+            || isAdmin());
+    }
+
+    match /moderation_actions/{actionId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+    }
+
+    match /platform_analytics/{docId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+  }
+}
