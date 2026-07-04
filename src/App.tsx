@@ -8,7 +8,6 @@ import {
   auth, 
   db, 
   storage,
-  functions,
   OperationType, 
   handleFirestoreError 
 } from './firebase';
@@ -136,7 +135,6 @@ import { VoiceMessageService } from './services/voiceMessageService';
 import { AdminService } from './services/adminService';
 import { authenticatedFetch } from './services/apiClient';
 import { normalizeParticipantList } from './utils/participants';
-import { httpsCallable } from 'firebase/functions';
 import SecurityDashboard from './components/SecurityDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import MessageActions from './components/MessageActions';
@@ -1246,6 +1244,44 @@ export default function App() {
     setToast({message, show: true});
     setTimeout(() => setToast({message: '', show: false}), 3000);
   };
+
+  useEffect(() => {
+    if (import.meta.env.DEV) return;
+    let currentVersion = '';
+    let reloading = false;
+
+    const checkForAppUpdate = async () => {
+      try {
+        const res = await fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const payload = await res.json();
+        const nextVersion = String(payload.version || '');
+        if (!nextVersion) return;
+        if (!currentVersion) {
+          currentVersion = nextVersion;
+          return;
+        }
+        if (nextVersion !== currentVersion && !reloading) {
+          reloading = true;
+          showToast('Updating Aegis Guard...');
+          setTimeout(() => window.location.reload(), 800);
+        }
+      } catch {
+        // Ignore transient network failures; the next poll will retry.
+      }
+    };
+
+    checkForAppUpdate();
+    const intervalId = window.setInterval(checkForAppUpdate, 30000);
+    const onFocus = () => checkForAppUpdate();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
   const [language, setLanguage] = useState<Language>('en');
   const [activeSettingsTab, setActiveSettingsTab] = useState<'main' | 'profile' | 'account' | 'linked_devices' | 'privacy' | 'storage' | 'chats' | 'calls' | 'notifications' | 'help'>('main');
   const [linkedDevices, setLinkedDevices] = useState([
@@ -1447,36 +1483,16 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!user) return;
-
-    const q = query(
-      collection(db, 'call_sessions'),
-      where('calleeId', '==', user.uid),
-      where('status', '==', 'ringing'),
-      limit(1)
-    );
-
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
-      if (snapshot.empty || activeVideoCall) {
-        setIncomingCall(null);
-        setIncomingCallerName('');
-        return;
-      }
-
-      const session = { id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as CallSession;
-      setIncomingCall(session);
-      try {
-        const callerDoc = await getDoc(doc(db, 'users_public', session.callerId));
-        setIncomingCallerName(callerDoc.exists() ? ((callerDoc.data() as UserProfile).displayName || 'Contact') : 'Contact');
-      } catch {
-        setIncomingCallerName('Contact');
-      }
-    }, (error) => {
-      console.error('Incoming call listener failed:', error);
-    });
-
-    return () => unsubscribe();
-  }, [user, activeVideoCall]);
+    if (!user) {
+      setIncomingCall(null);
+      setIncomingCallerName('');
+      return;
+    }
+    // Calls are intentionally locked as a coming-soon feature.
+    // Keep the incoming-call UI closed and avoid attaching restricted listeners.
+    setIncomingCall(null);
+    setIncomingCallerName('');
+  }, [user]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -1555,12 +1571,11 @@ export default function App() {
                 const device = await DeviceService.registerCurrentDevice(u.uid, keyMeta.publicKey);
                 await SessionService.createSession(u.uid, device.id);
                 await AuditLogService.log(u.uid, 'login', 'User authenticated successfully', { severity: 'info', deviceId: device.id });
-              } catch (e) { console.warn('Security init skipped:', e); }
+              } catch (e) {
+                if (import.meta.env.DEV) console.warn('Security init skipped:', e);
+              }
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
-              httpsCallable(functions, 'ensureAdminClaim')().then(() => {
-                u.getIdToken(true).then(() => AdminService.hasAdminClaim(u).then(setIsUserAdmin));
-              }).catch(() => null);
 
               if (!publicData.displayName || publicData.displayName === 'Anonymous') setShowCompleteProfile(true);
             } else {
@@ -1582,10 +1597,11 @@ export default function App() {
                 const device = await DeviceService.registerCurrentDevice(u.uid, keyMeta.publicKey);
                 await SessionService.createSession(u.uid, device.id);
                 await AuditLogService.log(u.uid, 'login', 'New user registered', { severity: 'info', deviceId: device.id });
-              } catch (e) { console.warn('Security init skipped:', e); }
+              } catch (e) {
+                if (import.meta.env.DEV) console.warn('Security init skipped:', e);
+              }
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
-              httpsCallable(functions, 'ensureAdminClaim')().catch(() => null);
               if (!u.displayName) setShowCompleteProfile(true);
             }
           } catch (error: any) {
@@ -1742,6 +1758,7 @@ export default function App() {
       }
       
       console.log("clearChat: Messages deleted");
+      setMessages([]);
       setShowChatMenu(false);
       // alert('Chat cleared.'); // avoid alert in iframe
     } catch (error) {
@@ -4234,35 +4251,39 @@ export default function App() {
                           <Trash2 className="w-5 h-5" />
                         </button>
                       )}
-                      <div className="relative">
-                        <button 
-                          onClick={() => setShowChatMenu(!showChatMenu)}
-                          className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
-                        >
-                          <MoreVertical className="w-5 h-5" />
-                        </button>
-                        {showChatMenu && (
-                          <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-zinc-100 rounded-xl shadow-xl z-20 transition-all">
-                            <button onClick={(e) => { 
-                              e.stopPropagation(); 
-                              console.log('Clear Chat clicked. selectedChatId:', selectedChatId); 
-                              clearChat(); 
-                            }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Clear Chat</button>
-                            {selectedChat.type !== 'group' && selectedChat.type !== 'saved' && (
-                              <button onClick={async (e) => {
-                                e.stopPropagation();
-                                await deleteDirectContactAndChat(selectedChat);
-                              }} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Delete Contact & Chat</button>
-                            )}
-                            <button onClick={() => { setShowChatMenu(false); setShowMessagesSearch(true); }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Search Message</button>
+                    </>
+                  )}
+                  <div className="relative">
+                    <button 
+                      onClick={() => setShowChatMenu(!showChatMenu)}
+                      className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
+                      title="Chat options"
+                    >
+                      <MoreVertical className="w-5 h-5" />
+                    </button>
+                    {showChatMenu && (
+                      <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-zinc-100 rounded-xl shadow-xl z-20 transition-all">
+                        <button onClick={(e) => { 
+                          e.stopPropagation();
+                          clearChat(); 
+                        }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Clear Chat</button>
+                        {selectedChat.type !== 'ai' && selectedChat.type !== 'group' && selectedChat.type !== 'saved' && (
+                          <button onClick={async (e) => {
+                            e.stopPropagation();
+                            await deleteDirectContactAndChat(selectedChat);
+                          }} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Delete Contact & Chat</button>
+                        )}
+                        <button onClick={() => { setShowChatMenu(false); setShowMessagesSearch(true); }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Search Message</button>
+                        {selectedChat.type !== 'ai' && (
+                          <>
                             <button onClick={() => { setShowChatMenu(false); setShowStarredOnly(!showStarredOnly); }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">{showStarredOnly ? "All Messages" : "Starred Messages"}</button>
                             <button onClick={() => { setShowChatMenu(false); setShowPhotosOnly(!showPhotosOnly); }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Photos and Videos</button>
                             <button onClick={reportMalware} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Report Malware</button>
-                          </div>
+                          </>
                         )}
                       </div>
-                    </>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
 

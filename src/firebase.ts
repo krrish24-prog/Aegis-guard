@@ -6,8 +6,6 @@ import {
   signOut, 
   onAuthStateChanged, 
   User as FirebaseUser,
-  setPersistence,
-  browserLocalPersistence,
   sendSignInLinkToEmail,
   isSignInWithEmailLink,
   signInWithEmailLink
@@ -28,11 +26,9 @@ import {
   Timestamp,
   updateDoc,
   getDocFromServer,
-  initializeFirestore,
-  enableIndexedDbPersistence
+  initializeFirestore
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import { getFunctions } from 'firebase/functions';
 import firebaseConfigRaw from '../firebase-applet-config.json';
 
 // Provide a fallback empty config to prevent hard crashes if json is empty
@@ -51,26 +47,11 @@ const app = initializeApp(firebaseConfig);
 export { app };
 export const auth = getAuth(app);
 export const storage = getStorage(app);
-export const functions = getFunctions(app);
-
-// Set persistence explicitly for better iframe support
-setPersistence(auth, browserLocalPersistence).catch(err => console.error("Persistence error", err));
 
 // Use initializeFirestore with long polling to bypass potential proxy/websocket issues
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
 }, firebaseConfig.firestoreDatabaseId || undefined);
-
-// Enable offline persistence
-enableIndexedDbPersistence(db).catch((err) => {
-  if (err.code === 'failed-precondition') {
-    // Multiple tabs open, persistence can only be enabled in one tab at a a time.
-    console.warn('Persistence failed-precondition');
-  } else if (err.code === 'unimplemented') {
-    // The current browser does not support all of the features required to enable persistence
-    console.warn('Persistence unimplemented');
-  }
-});
 export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {

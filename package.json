@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist-server/server.cjs",
+    "build": "node scripts/write-build-version.mjs && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist-server/server.cjs",
     "preview": "vite preview",
     "start": "node dist-server/server.cjs",
     "clean": "node -e \"for (const dir of ['dist', 'dist-server']) require('fs').rmSync(dir, { recursive: true, force: true })\"",
