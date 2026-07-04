@@ -164,6 +164,10 @@ const ComingSoonBadge = ({ compact = false }: { compact?: boolean }) => (
   </span>
 );
 
+const showComingSoonNotice = (feature: string) => {
+  alert(`${feature} is coming soon. This option is currently locked until the full feature is ready.`);
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -3736,7 +3740,7 @@ export default function App() {
       </button>
 
       <button 
-        onClick={() => setActiveSection('meetings')}
+        onClick={() => showComingSoonNotice('Meetings')}
         title={t.meetings}
         className={cn(
           "flex flex-col items-center gap-1 transition-all duration-300 relative",
@@ -3810,7 +3814,7 @@ export default function App() {
       </button>
 
       <button 
-        onClick={() => setActiveSection('status')}
+        onClick={() => showComingSoonNotice('Status')}
         title={t.statusText || 'Status'}
         className={cn(
           "flex flex-col items-center gap-1 transition-all duration-300 relative",
@@ -4220,7 +4224,7 @@ export default function App() {
                         <FileText className="w-5 h-5" />
                       </button>
                       <button 
-                        onClick={startRealVideoCall}
+                        onClick={() => showComingSoonNotice('Video calls')}
                         className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
                         title="Video Call"
                       >
@@ -4230,7 +4234,7 @@ export default function App() {
                         <Video className="w-5 h-5" />
                       </button>
                       <button 
-                        onClick={startRealVoiceCall}
+                        onClick={() => showComingSoonNotice('Voice calls')}
                         className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
                         title="Voice Call"
                       >
@@ -4806,12 +4810,16 @@ export default function App() {
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
                       title="Take Photo"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        showComingSoonNotice('Camera capture');
+                      }}
                     >
                       <span className="absolute -top-2 -right-3 z-10">
                         <ComingSoonBadge compact />
                       </span>
                       <Camera className="w-5 h-5" />
-                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} />
+                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} disabled />
                     </label>
                     <label 
                       className={cn(
@@ -4819,12 +4827,16 @@ export default function App() {
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
                       title="Send Image"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        showComingSoonNotice('Photo transfer');
+                      }}
                     >
                       <span className="absolute -top-2 -right-3 z-10">
                         <ComingSoonBadge compact />
                       </span>
                       <ImageIcon className="w-5 h-5" />
-                      <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+                      <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} disabled />
                     </label>
                     {selectedChat?.type !== 'ai' && (
                       <>
@@ -4834,12 +4846,16 @@ export default function App() {
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                           )} 
                           title="Send Document"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            showComingSoonNotice('File transfer');
+                          }}
                         >
                           <span className="absolute -top-2 -right-3 z-10">
                             <ComingSoonBadge compact />
                           </span>
                           <Paperclip className="w-5 h-5" />
-                          <input type="file" accept="application/pdf,text/*" className="hidden" onChange={async (e) => {
+                          <input type="file" accept="application/pdf,text/*" className="hidden" disabled onChange={async (e) => {
                             const file = e.target.files?.[0];
                             if (file) {
                               if (file.type.startsWith('image/')) {
@@ -4878,7 +4894,7 @@ export default function App() {
                         </label>
                         <button 
                           type="button" 
-                          onClick={() => setShowVault(true)}
+                          onClick={() => showComingSoonNotice('Secure file vault')}
                           className={cn(
                             "relative p-2 rounded-lg transition-all",
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
@@ -4981,7 +4997,7 @@ export default function App() {
           </div>
           <div className="flex gap-3">
             <button 
-              onClick={() => setShowScheduleModal('call')}
+              onClick={() => showComingSoonNotice('Scheduled calls')}
               className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-all flex items-center gap-2"
             >
               <Phone className="w-4 h-4" />
@@ -4989,7 +5005,7 @@ export default function App() {
               <ComingSoonBadge compact />
             </button>
             <button 
-              onClick={() => setShowScheduleModal('meeting')}
+              onClick={() => showComingSoonNotice('Meeting integration')}
               className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all flex items-center gap-2"
             >
               <Video className="w-4 h-4" />
@@ -5245,11 +5261,17 @@ export default function App() {
             </select>
           </div>
           <div className="flex items-center gap-4 p-4 rounded-3xl border border-dashed border-zinc-200 relative overflow-hidden">
-            <label className={cn("relative w-14 h-14 cursor-pointer rounded-full flex items-center justify-center transition-all shadow-sm shrink-0", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}>
+            <label
+              className={cn("relative w-14 h-14 cursor-pointer rounded-full flex items-center justify-center transition-all shadow-sm shrink-0", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}
+              onClick={(e) => {
+                e.preventDefault();
+                showComingSoonNotice('Status uploads');
+              }}
+            >
               <span className="absolute -top-2 -right-4 z-10">
                 <ComingSoonBadge compact />
               </span>
-              <input type="file" accept="image/*,video/*" className="hidden" onChange={handleStatusUpload} />
+              <input type="file" accept="image/*,video/*" className="hidden" onChange={handleStatusUpload} disabled />
               <Plus className="w-6 h-6" />
             </label>
             <div>
@@ -5337,7 +5359,7 @@ export default function App() {
                     { id: 'profile', label: t.profile || 'Profile', icon: UserIcon },
                     { id: 'account', label: t.account || 'Account', icon: Key },
                     { id: 'linked_devices', label: 'Linked Devices', icon: MonitorSmartphone },
-                    { id: 'privacy', label: t.privacyAndFeedback || 'Privacy & Feedback', icon: Lock },
+                    { id: 'privacy', label: t.privacy || 'Privacy', icon: Lock },
                     { id: 'storage', label: t.storageAndData || 'Storage & Data', icon: Database },
                     { id: 'calls', label: 'Calls', icon: Phone },
                     { id: 'notifications', label: t.notifications || 'Notifications', icon: ShieldAlert },
@@ -5859,19 +5881,37 @@ export default function App() {
                             <Shield className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
                             <span className="text-sm font-bold text-zinc-900">Privacy Policy</span>
                           </button>
-                          <button className={cn(
+                          <button
+                            onClick={() => document.getElementById('contact-feedback-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                            className={cn(
                             "w-full p-4 rounded-2xl border flex items-center gap-3 transition-all",
                             theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20 hover:bg-emerald-900/30" : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
                           )}>
                             <Info className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
-                            <span className="text-sm font-bold text-zinc-900">Contact Us</span>
+                            <span className="text-sm font-bold text-zinc-900">Contact & Feedback</span>
                           </button>
-                          <button className={cn(
-                            "w-full p-4 rounded-2xl border flex items-center gap-3 transition-all",
-                            theme === 'glow' ? "bg-red-900/20 border-red-500/20 hover:bg-red-900/30" : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
-                          )}>
-                            <AlertTriangle className="w-5 h-5 text-red-600" />
-                            <span className={cn("text-sm font-bold", theme === 'glow' ? "text-red-400" : "text-red-600")}>Report a Bug</span>
+                        </div>
+                      </section>
+                      <section id="contact-feedback-panel" className="space-y-4">
+                        <h3 className={cn(
+                          "text-xs font-bold uppercase tracking-widest",
+                          theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
+                        )}>Contact & Feedback</h3>
+                        <div className={cn("space-y-4 p-6 rounded-3xl border transition-all", theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100")}>
+                          <p className="text-xs text-zinc-500">Send support questions, feedback, or bug reports from one place.</p>
+                          <textarea
+                            value={feedback}
+                            onChange={(e) => setFeedback(e.target.value)}
+                            placeholder="Describe your question, feedback, or issue..."
+                            className={cn("w-full px-4 py-3 rounded-2xl text-sm focus:ring-2 transition-all min-h-[120px] resize-none", theme === 'glow' ? "bg-emerald-900/40 border-emerald-500/20 text-white focus:ring-emerald-500/20" : "bg-white border-zinc-200 text-zinc-900")}
+                          />
+                          <button
+                            onClick={submitFeedback}
+                            disabled={isSubmittingFeedback || !feedback.trim()}
+                            className={cn("w-full py-3 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-zinc-900 text-white hover:bg-zinc-800")}
+                          >
+                            {isSubmittingFeedback ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Send className="w-4 h-4" />}
+                            Submit Contact & Feedback
                           </button>
                         </div>
                       </section>
@@ -6187,7 +6227,7 @@ export default function App() {
                     { id: 'main', icon: UserIcon, label: t.profile },
                     { id: 'account', icon: Key, label: t.account },
                     { id: 'linked_devices', icon: MonitorSmartphone, label: 'Linked Devices' },
-                    { id: 'privacy', icon: Shield, label: t.privacy },
+                    { id: 'privacy', icon: Shield, label: t.privacy || 'Privacy' },
                     { id: 'chats', icon: MessageSquare, label: t.chats },
                     { id: 'calls', icon: Phone, label: 'Calls' },
                     { id: 'notifications', icon: Volume2, label: t.notifications },
@@ -6683,16 +6723,12 @@ export default function App() {
                           <ChevronRight className="w-4 h-4 text-zinc-300" />
                         </button>
                         <button 
-                          onClick={() => {
-                             setActiveSection('chats');
-                             // Simulate opening a support chat
-                             alert("Aegis Support Chat open.");
-                          }}
+                          onClick={() => document.getElementById('contact-feedback-panel-alt')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
                           className="w-full flex items-center justify-between p-3 hover:bg-black/5 rounded-xl transition-all"
                         >
                           <div className="flex items-center gap-3">
                             <Users className="w-5 h-5 text-zinc-400" />
-                            <span className={cn("text-sm font-medium", theme === 'glow' ? "text-white" : "text-zinc-700")}>{t.contactUs}</span>
+                            <span className={cn("text-sm font-medium", theme === 'glow' ? "text-white" : "text-zinc-700")}>Contact & Feedback</span>
                           </div>
                           <ChevronRight className="w-4 h-4 text-zinc-300" />
                         </button>
@@ -6716,13 +6752,14 @@ export default function App() {
                         </button>
                       </div>
 
-                      <div className="space-y-4">
-                        <h4 className="text-sm font-bold text-zinc-900">{t.feedback}</h4>
+                      <div id="contact-feedback-panel-alt" className="space-y-4">
+                        <h4 className="text-sm font-bold text-zinc-900">Contact & Feedback</h4>
                         <div className={cn("space-y-4 p-6 rounded-3xl border transition-all", theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100")}>
+                          <p className="text-xs text-zinc-500">Use this for support questions, product feedback, and bug reports.</p>
                           <textarea 
                             value={feedback}
                             onChange={(e) => setFeedback(e.target.value)}
-                            placeholder="Tell us what you think..."
+                            placeholder="Describe your question, feedback, or issue..."
                             className={cn("w-full px-4 py-3 rounded-2xl text-sm focus:ring-2 transition-all min-h-[100px] resize-none", theme === 'glow' ? "bg-emerald-900/40 border-emerald-500/20 text-white focus:ring-emerald-500/20" : "bg-white border-zinc-200 text-zinc-900")}
                           />
                           <button 
@@ -6731,7 +6768,7 @@ export default function App() {
                             className={cn("w-full py-3 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-zinc-900 text-white hover:bg-zinc-800")}
                           >
                             {isSubmittingFeedback ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Send className="w-4 h-4" />}
-                            {t.submitFeedback}
+                            Submit Contact & Feedback
                           </button>
                         </div>
                       </div>
