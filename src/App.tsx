@@ -1145,8 +1145,6 @@ export default function App() {
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [scheduleGuests, setScheduleGuests] = useState<{name: string, contactDetail: string}[]>([]);
-  const [storageCheckResult, setStorageCheckResult] = useState<string>('');
-  const [isTestingStorageWrite, setIsTestingStorageWrite] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
   const [vishingProtection, setVishingProtection] = useState(true);
   const [autoGroupVerification, setAutoGroupVerification] = useState(true);
@@ -1221,22 +1219,6 @@ export default function App() {
     }
   };
 
-  const testAppwriteStorageWrite = async () => {
-    setIsTestingStorageWrite(true);
-    setStorageCheckResult('');
-    try {
-      const res = await authenticatedFetch('/api/storage/write-test', { method: 'POST' });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || !payload.ok) {
-        throw new Error(payload.error || payload.details || 'Storage write test failed');
-      }
-      setStorageCheckResult(`Write test passed on ${payload.endpoint || 'Appwrite'}`);
-    } catch (error) {
-      setStorageCheckResult(error instanceof Error ? error.message : 'Storage write test failed');
-    } finally {
-      setIsTestingStorageWrite(false);
-    }
-  };
   const [showVault, setShowVault] = useState(false);
   const [showCompleteProfile, setShowCompleteProfile] = useState(false);
   const [twoStepPin, setTwoStepPin] = useState('');
@@ -5377,7 +5359,7 @@ export default function App() {
                     >
                       <tab.icon className={cn("w-5 h-5", activeSettingsTab === tab.id ? (theme === 'glow' ? "text-white" : "text-emerald-500") : "text-zinc-400")} />
                       <span className="flex-1 text-left">{tab.label}</span>
-                      {tab.id === 'calls' && <ComingSoonBadge compact />}
+                      {(tab.id === 'calls' || tab.id === 'linked_devices') && <ComingSoonBadge compact />}
                     </button>
                   ))}
                 </div>
@@ -5592,13 +5574,16 @@ export default function App() {
                     <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
                       <section className="space-y-4">
                         <div className="flex items-center justify-between">
-                            <h3 className={cn(
-                              "text-xs font-bold uppercase tracking-widest",
-                              theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
-                            )}>Linked Devices</h3>
+                            <div className="flex items-center gap-2">
+                              <h3 className={cn(
+                                "text-xs font-bold uppercase tracking-widest",
+                                theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
+                              )}>Linked Devices</h3>
+                              <ComingSoonBadge />
+                            </div>
                             <div className="flex gap-2">
-                                <button onClick={() => setShowLinkPhone(true)} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Link with Phone Number</button>
-                                <button onClick={() => setShowLinkQR(true)} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>Link Device (QR)</button>
+                                <button onClick={() => showComingSoonNotice('Phone device linking')} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Link with Phone Number</button>
+                                <button onClick={() => showComingSoonNotice('QR device linking')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>Link Device (QR)</button>
                             </div>
                         </div>
 
@@ -5713,41 +5698,31 @@ export default function App() {
                           </div>
                         </div>
                       </section>
+                    </div>
+                  )}
 
+                  {activeSettingsTab === 'notifications' && (
+                    <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
                       <section className="space-y-4">
-                        <h3 className={cn(
-                          "text-xs font-bold uppercase tracking-widest",
-                          theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
-                        )}>Feedback</h3>
+                        <div className="flex items-center justify-between">
+                          <h3 className={cn(
+                            "text-xs font-bold uppercase tracking-widest",
+                            theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
+                          )}>Notifications</h3>
+                          <ComingSoonBadge />
+                        </div>
                         <div className={cn(
-                          "p-6 rounded-3xl border space-y-4 transition-all",
+                          "p-5 rounded-2xl border flex items-center justify-between transition-all",
                           theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
                         )}>
-                          <p className={cn(
-                            "text-sm leading-relaxed",
-                            theme === 'glow' ? "text-white/70" : "text-zinc-600"
-                          )}>
-                            Your feedback helps us improve Aegis. Let us know about your experience or report any issues.
-                          </p>
-                          <textarea 
-                            value={feedback}
-                            onChange={(e) => setFeedback(e.target.value)}
-                            placeholder="Write your feedback here..."
-                            className={cn(
-                              "w-full p-4 rounded-2xl text-sm min-h-[120px] resize-none focus:ring-2 outline-none transition-all",
-                              theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20 text-white focus:ring-emerald-500/20" : "bg-white border-zinc-200 text-zinc-900 focus:ring-emerald-500/20"
-                            )}
-                          />
-                          <button 
-                            onClick={submitFeedback}
-                            disabled={isSubmittingFeedback || !feedback.trim()}
-                            className={cn(
-                              "w-full py-3 rounded-2xl font-bold transition-all disabled:opacity-50",
-                              theme === 'glow' ? "bg-emerald-500 text-white glow-emerald-ring" : "bg-emerald-500 text-white hover:bg-emerald-600 shadow-lg shadow-emerald-500/20"
-                            )}
-                          >
-                            {isSubmittingFeedback ? 'Submitting...' : 'Submit Feedback'}
-                          </button>
+                          <div className="flex items-center gap-3">
+                            <ShieldAlert className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
+                            <div>
+                              <p className="text-sm font-bold text-zinc-900">Notification controls</p>
+                              <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>Message tones, vibration, and priority alerts will be available soon.</p>
+                            </div>
+                          </div>
+                          <ComingSoonBadge />
                         </div>
                       </section>
                     </div>
@@ -5773,27 +5748,6 @@ export default function App() {
                               </div>
                             </div>
                             <span className={cn("text-xs font-bold", theme === 'glow' ? "text-emerald-500" : "text-zinc-500")}>1.2 GB</span>
-                          </div>
-                          <div className={cn(
-                            "p-4 rounded-2xl border flex items-center justify-between transition-all",
-                            theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
-                          )}>
-                            <div className="flex items-center gap-3">
-                              <ShieldCheck className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
-                              <div>
-                                <p className="text-sm font-bold text-zinc-900">Appwrite Write Check</p>
-                                <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>
-                                  {storageCheckResult || 'Verify encrypted media uploads'}
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              onClick={testAppwriteStorageWrite}
-                              disabled={isTestingStorageWrite}
-                              className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold disabled:opacity-50"
-                            >
-                              {isTestingStorageWrite ? 'Checking...' : 'Test'}
-                            </button>
                           </div>
                           <div className={cn(
                             "p-4 rounded-2xl border flex items-center justify-between transition-all",
@@ -6245,7 +6199,8 @@ export default function App() {
                       )}
                     >
                       <tab.icon className={cn("w-4 h-4", activeSettingsTab === tab.id ? (theme === 'glow' ? "text-white" : "text-emerald-500") : "text-zinc-400")} />
-                      {tab.label}
+                      <span className="flex-1 text-left">{tab.label}</span>
+                      {(tab.id === 'calls' || tab.id === 'linked_devices') && <ComingSoonBadge compact />}
                     </button>
                   ))}
                 </div>
@@ -6434,10 +6389,13 @@ export default function App() {
                   {activeSettingsTab === 'linked_devices' && (
                     <div className="space-y-8">
                        <div className="flex items-center justify-between">
-                            <h4 className="text-sm font-bold text-zinc-900">Linked Devices</h4>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-zinc-900">Linked Devices</h4>
+                              <ComingSoonBadge />
+                            </div>
                             <div className="flex gap-2">
-                                <button onClick={() => setShowLinkPhone(true)} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Phone Number</button>
-                                <button onClick={() => setShowLinkQR(true)} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>QR Code</button>
+                                <button onClick={() => showComingSoonNotice('Phone device linking')} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Phone Number</button>
+                                <button onClick={() => showComingSoonNotice('QR device linking')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>QR Code</button>
                             </div>
                         </div>
                         {showLinkQR && (
@@ -6624,7 +6582,10 @@ export default function App() {
                   {activeSettingsTab === 'notifications' && (
                     <div className="space-y-6">
                       <div className="space-y-4">
-                        <h4 className="text-sm font-bold text-zinc-900">{t.notifications}</h4>
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-bold text-zinc-900">{t.notifications}</h4>
+                          <ComingSoonBadge />
+                        </div>
                         <div className={cn("space-y-4 p-4 rounded-2xl border", theme !== 'light' ? 'bg-zinc-900/50 border-zinc-500/20' : 'bg-zinc-50 border-zinc-100')}>
                           <div className="flex items-center justify-between">
                             <span className={cn("text-sm font-medium", theme === 'glow' ? "text-white/70" : "text-zinc-700")}>{t.tones}</span>
