@@ -5582,8 +5582,8 @@ export default function App() {
                               <ComingSoonBadge />
                             </div>
                             <div className="flex gap-2">
-                                <button onClick={() => showComingSoonNotice('Phone device linking')} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Link with Phone Number</button>
-                                <button onClick={() => showComingSoonNotice('QR device linking')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>Link Device (QR)</button>
+                                <button disabled className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold transition-colors text-zinc-400 border border-zinc-200 shadow-sm cursor-not-allowed flex items-center gap-2">Link with Phone Number <ComingSoonBadge compact /></button>
+                                <button disabled className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm cursor-not-allowed flex items-center gap-2 opacity-70", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white")}>Link Device (QR) <ComingSoonBadge compact /></button>
                             </div>
                         </div>
 
@@ -6394,8 +6394,8 @@ export default function App() {
                               <ComingSoonBadge />
                             </div>
                             <div className="flex gap-2">
-                                <button onClick={() => showComingSoonNotice('Phone device linking')} className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold hover:bg-zinc-200 transition-colors text-zinc-900 border border-zinc-200 shadow-sm">Phone Number</button>
-                                <button onClick={() => showComingSoonNotice('QR device linking')} className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600")}>QR Code</button>
+                                <button disabled className="px-3 py-1.5 rounded-lg bg-zinc-100 text-xs font-bold transition-colors text-zinc-400 border border-zinc-200 shadow-sm cursor-not-allowed flex items-center gap-2">Phone Number <ComingSoonBadge compact /></button>
+                                <button disabled className={cn("px-3 py-1.5 rounded-lg text-xs font-bold transition-colors shadow-sm cursor-not-allowed flex items-center gap-2 opacity-70", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-500 text-white")}>QR Code <ComingSoonBadge compact /></button>
                             </div>
                         </div>
                         {showLinkQR && (
