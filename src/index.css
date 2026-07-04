@@ -53,6 +53,10 @@
   .animate-glow-purple {
     animation: glow-purple 2s infinite alternate;
   }
+  .coming-soon-badge {
+    white-space: nowrap;
+    animation: coming-soon-blink 1.35s ease-in-out infinite;
+  }
 }
 
 @keyframes glow {
@@ -86,6 +90,25 @@
   }
   to {
     box-shadow: 0 0 20px rgba(168, 85, 247, 0.6);
+  }
+}
+
+@keyframes coming-soon-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 0 rgba(251, 191, 36, 0);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.96);
+    box-shadow: 0 0 12px rgba(251, 191, 36, 0.55);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coming-soon-badge {
+    animation: none;
   }
 }
 
@@ -168,4 +191,3 @@ body {
 /* Make dark elements match themes */
 .theme-glow .text-white { color: #ecfdf5 !important; }
 .theme-glow .bg-emerald-500 { background-color: #10b981 !important; box-shadow: 0 0 15px rgba(16, 185, 129, 0.4); }
-

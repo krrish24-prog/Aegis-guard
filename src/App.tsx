@@ -153,6 +153,17 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const ComingSoonBadge = ({ compact = false }: { compact?: boolean }) => (
+  <span
+    className={cn(
+      "coming-soon-badge inline-flex shrink-0 items-center justify-center rounded-full border border-amber-300/80 bg-amber-100 text-amber-800 shadow-sm shadow-amber-300/30",
+      compact ? "px-1.5 py-0.5 text-[8px] font-black leading-none" : "px-2.5 py-1 text-[10px] font-black uppercase tracking-widest"
+    )}
+  >
+    {compact ? 'Soon' : 'Coming soon'}
+  </span>
+);
+
 // --- Types ---
 
 interface UserProfile {
@@ -3509,10 +3520,13 @@ export default function App() {
     return (
       <div className="space-y-6 animate-in fade-in slide-in-from-right-4 duration-500">
         <section className="space-y-4">
-          <h3 className={cn(
-            "text-xs font-bold uppercase tracking-widest",
-            theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
-          )}>Call Settings</h3>
+          <div className="flex items-center gap-2">
+            <h3 className={cn(
+              "text-xs font-bold uppercase tracking-widest",
+              theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
+            )}>Call Settings</h3>
+            <ComingSoonBadge />
+          </div>
           <div className="space-y-3">
             <ToggleRow icon={Camera} title="Start Calls With Camera" subtitle="Video calls request camera immediately" settingKey="startWithCamera" value={callSettings.startWithCamera} />
             <ToggleRow icon={Mic} title="Start Calls With Microphone" subtitle="Join calls unmuted by default" settingKey="startWithMic" value={callSettings.startWithMic} />
@@ -3729,6 +3743,9 @@ export default function App() {
           activeSection === 'meetings' ? "text-emerald-500 scale-110" : "text-zinc-500 hover:text-zinc-300"
         )}
       >
+        <span className="absolute -top-2 -right-7 z-10">
+          <ComingSoonBadge compact />
+        </span>
         <div className={cn(
           "p-2 rounded-xl transition-all",
           activeSection === 'meetings' && theme === 'glow' && "glow-emerald-side animate-glow"
@@ -3763,6 +3780,9 @@ export default function App() {
           activeSection === 'settings' ? "text-emerald-500 scale-110" : "text-zinc-500 hover:text-zinc-300"
         )}
       >
+        <span className="absolute -top-2 -right-6 z-10">
+          <ComingSoonBadge compact />
+        </span>
         <div className={cn(
           "p-2 rounded-xl transition-all",
           activeSection === 'settings' && theme === 'glow' && "glow-emerald-side animate-glow"
@@ -3797,6 +3817,9 @@ export default function App() {
           activeSection === 'status' ? "text-emerald-500 scale-110" : "text-zinc-500 hover:text-zinc-300"
         )}
       >
+        <span className="absolute -top-2 -right-6 z-10">
+          <ComingSoonBadge compact />
+        </span>
         <div className={cn(
           "p-2 rounded-xl transition-all overflow-hidden",
           activeSection === 'status' && theme === 'glow' && "glow-emerald-side animate-glow"
@@ -4198,16 +4221,22 @@ export default function App() {
                       </button>
                       <button 
                         onClick={startRealVideoCall}
-                        className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
+                        className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
                         title="Video Call"
                       >
+                        <span className="absolute -top-2 -right-3 z-10">
+                          <ComingSoonBadge compact />
+                        </span>
                         <Video className="w-5 h-5" />
                       </button>
                       <button 
                         onClick={startRealVoiceCall}
-                        className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
+                        className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
                         title="Voice Call"
                       >
+                        <span className="absolute -top-2 -right-3 z-10">
+                          <ComingSoonBadge compact />
+                        </span>
                         <Phone className="w-5 h-5" />
                       </button>
                       {selectedChat.type === 'direct' && (
@@ -4773,21 +4802,27 @@ export default function App() {
                     </button>
                     <label 
                       className={cn(
-                        "p-2 rounded-lg cursor-pointer transition-all",
+                        "relative p-2 rounded-lg cursor-pointer transition-all",
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
                       title="Take Photo"
                     >
+                      <span className="absolute -top-2 -right-3 z-10">
+                        <ComingSoonBadge compact />
+                      </span>
                       <Camera className="w-5 h-5" />
                       <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} />
                     </label>
                     <label 
                       className={cn(
-                        "p-2 rounded-lg cursor-pointer transition-all",
+                        "relative p-2 rounded-lg cursor-pointer transition-all",
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
                       title="Send Image"
                     >
+                      <span className="absolute -top-2 -right-3 z-10">
+                        <ComingSoonBadge compact />
+                      </span>
                       <ImageIcon className="w-5 h-5" />
                       <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
                     </label>
@@ -4795,11 +4830,14 @@ export default function App() {
                       <>
                         <label 
                           className={cn(
-                            "p-2 rounded-lg cursor-pointer transition-all",
+                            "relative p-2 rounded-lg cursor-pointer transition-all",
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                           )} 
                           title="Send Document"
                         >
+                          <span className="absolute -top-2 -right-3 z-10">
+                            <ComingSoonBadge compact />
+                          </span>
                           <Paperclip className="w-5 h-5" />
                           <input type="file" accept="application/pdf,text/*" className="hidden" onChange={async (e) => {
                             const file = e.target.files?.[0];
@@ -4842,11 +4880,14 @@ export default function App() {
                           type="button" 
                           onClick={() => setShowVault(true)}
                           className={cn(
-                            "p-2 rounded-lg transition-all",
+                            "relative p-2 rounded-lg transition-all",
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                           )}
                           title="Secure Vault"
                         >
+                          <span className="absolute -top-2 -right-3 z-10">
+                            <ComingSoonBadge compact />
+                          </span>
                           <HardDrive className="w-5 h-5" />
                         </button>
                       </>
@@ -4934,7 +4975,10 @@ export default function App() {
     <div className="flex-1 flex flex-col bg-white overflow-y-auto">
       <div className="p-12 max-w-5xl mx-auto w-full space-y-12">
         <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-zinc-900">{t.meetings}</h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold text-zinc-900">{t.meetings}</h2>
+            <ComingSoonBadge />
+          </div>
           <div className="flex gap-3">
             <button 
               onClick={() => setShowScheduleModal('call')}
@@ -4942,6 +4986,7 @@ export default function App() {
             >
               <Phone className="w-4 h-4" />
               Schedule Call
+              <ComingSoonBadge compact />
             </button>
             <button 
               onClick={() => setShowScheduleModal('meeting')}
@@ -4949,6 +4994,7 @@ export default function App() {
             >
               <Video className="w-4 h-4" />
               Schedule Meeting
+              <ComingSoonBadge compact />
             </button>
           </div>
         </div>
@@ -5179,7 +5225,10 @@ export default function App() {
       </AnimatePresence>
 
       <div className="max-w-2xl mx-auto w-full space-y-8 relative z-10">
-        <h2 className="text-2xl font-bold text-zinc-900">Updates & Status</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold text-zinc-900">Updates & Status</h2>
+          <ComingSoonBadge />
+        </div>
         <p className="text-zinc-500 text-sm">Add a photo, video or text status. Status updates disappear after 24 hours.</p>
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-end gap-2 text-xs text-zinc-500">
@@ -5196,12 +5245,18 @@ export default function App() {
             </select>
           </div>
           <div className="flex items-center gap-4 p-4 rounded-3xl border border-dashed border-zinc-200 relative overflow-hidden">
-            <label className={cn("w-14 h-14 cursor-pointer rounded-full flex items-center justify-center transition-all shadow-sm shrink-0", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}>
+            <label className={cn("relative w-14 h-14 cursor-pointer rounded-full flex items-center justify-center transition-all shadow-sm shrink-0", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}>
+              <span className="absolute -top-2 -right-4 z-10">
+                <ComingSoonBadge compact />
+              </span>
               <input type="file" accept="image/*,video/*" className="hidden" onChange={handleStatusUpload} />
               <Plus className="w-6 h-6" />
             </label>
             <div>
-              <h3 className="font-bold text-sm">My Status</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-sm">My Status</h3>
+                <ComingSoonBadge compact />
+              </div>
               <p className="text-xs text-zinc-500">Tap + to add photo or video status</p>
             </div>
           </div>
@@ -5299,7 +5354,8 @@ export default function App() {
                       )}
                     >
                       <tab.icon className={cn("w-5 h-5", activeSettingsTab === tab.id ? (theme === 'glow' ? "text-white" : "text-emerald-500") : "text-zinc-400")} />
-                      {tab.label}
+                      <span className="flex-1 text-left">{tab.label}</span>
+                      {tab.id === 'calls' && <ComingSoonBadge compact />}
                     </button>
                   ))}
                 </div>
