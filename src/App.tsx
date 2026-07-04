@@ -3426,6 +3426,14 @@ export default function App() {
   // --- Render Helpers ---
 
   const selectedChat = useMemo(() => chats.find(c => c.id === selectedChatId), [chats, selectedChatId]);
+
+  useEffect(() => {
+    if (selectedChatId && !selectedChat) {
+      setSelectedChatId(null);
+      setMessages([]);
+      setShowChatMenu(false);
+    }
+  }, [selectedChatId, selectedChat]);
   
   const [recipientProfile, setRecipientProfile] = useState<UserProfile | null>(null);
 
@@ -4067,7 +4075,7 @@ export default function App() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col bg-white relative">
         <AnimatePresence>
-          {selectedChatId ? (
+          {selectedChat ? (
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
