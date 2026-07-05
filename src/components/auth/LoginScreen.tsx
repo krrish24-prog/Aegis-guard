@@ -145,7 +145,7 @@ const BrandPanel = () => (
       >
         <Shield className="w-8 h-8 text-white" />
       </motion.div>
-      <h1 className="text-4xl font-bold text-white tracking-tight mb-3">Aegis Messenger</h1>
+      <h1 className="text-4xl font-bold text-white tracking-tight mb-3">Aegis Guard</h1>
       <p className="text-zinc-400 text-lg mb-10 max-w-sm">
         Military-grade end-to-end encryption for secure communication.
       </p>
@@ -215,7 +215,7 @@ export default function LoginScreen({
               <Shield className="w-7 h-7 text-white" />
             </div>
             <div className="text-center">
-              <h1 className="text-2xl font-bold text-white">Aegis Messenger</h1>
+              <h1 className="text-2xl font-bold text-white">Aegis Guard</h1>
               <p className="text-zinc-500 text-sm">Secure encrypted messaging</p>
             </div>
           </div>
@@ -412,7 +412,7 @@ export default function LoginScreen({
           </div>
 
           <p className="text-[10px] text-zinc-600 text-center leading-relaxed px-4">
-            By continuing, you agree to Aegis Messenger&apos;s secure communication protocols.
+            By continuing, you agree to Aegis Guard&apos;s secure communication protocols.
           </p>
         </div>
       </div>

@@ -369,7 +369,7 @@ const LoadingScreen = () => (
       className="flex flex-col items-center"
     >
       <Shield className="w-16 h-16 text-emerald-600 mb-4" />
-      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Aegis Messenger</h1>
+      <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Aegis Guard</h1>
       <p className="text-zinc-500 mt-2">Initializing secure environment...</p>
     </motion.div>
   </div>
