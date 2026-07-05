@@ -433,7 +433,7 @@ async function startServer() {
   ): AiMessage[] => {
     const messages: AiMessage[] = [{
       role: "system",
-      content: `You are Aegis Guard, the built-in AI assistant for Aegis Messenger.
+      content: `You are Aegis Guard, the built-in AI assistant for Aegis Guard.
 
 Speak like a helpful mid-level assistant: clear, friendly, and practical. Give enough explanation to be useful, but do not write long essays unless the user asks.
 
@@ -807,7 +807,7 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
         Question: ${question}`;
 
       const messages: AiMessage[] = [
-        { role: "system" as const, content: "You are an expert cybersecurity assistant built into Aegis Messenger. Provide clear, actionable security advice." },
+        { role: "system" as const, content: "You are an expert cybersecurity assistant built into Aegis Guard. Provide clear, actionable security advice." },
         { role: "user" as const, content: userPrompt }
       ];
 

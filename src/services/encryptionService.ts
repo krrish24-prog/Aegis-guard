@@ -1,7 +1,7 @@
 import { authenticatedFetch } from './apiClient';
 
 /**
- * True E2EE Service for Aegis Messenger
+ * True E2EE Service for Aegis Guard
  * Uses Web Crypto API for RSA-OAEP (Key Exchange) and AES-GCM (Message Encryption).
  */
 
