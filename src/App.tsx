@@ -2081,19 +2081,23 @@ export default function App() {
     try {
       // Normalize phone number for storage
       const normalizedPhone = editPhoneNumber.replace(/\D/g, '');
+      const normalizedPhotoURL = editPhotoURL?.startsWith('data:image/')
+        ? await resizeImage(editPhotoURL, 180_000)
+        : (editPhotoURL || profile.photoURL || '');
       
       const privateUpdate = {
         phoneNumber: normalizedPhone,
         privacySettings: profile.privacySettings || {},
         storageSettings: profile.storageSettings || {},
         securitySettings: profile.securitySettings || {},
-        callSettings: profile.callSettings || {}
+        callSettings: profile.callSettings || {},
+        photoURL: normalizedPhotoURL
       };
       
       const publicUpdate = {
         displayName: editDisplayName,
         status: editStatus,
-        photoURL: editPhotoURL
+        photoURL: normalizedPhotoURL
       };
 
       await Promise.all([
@@ -2107,6 +2111,9 @@ export default function App() {
         ...publicUpdate
       };
       setProfile(updatedProfile);
+      setEditPhotoURL(normalizedPhotoURL);
+      setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
+      setSyncedContacts(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
       setShowSettings(false);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.email}`);
@@ -2128,11 +2135,14 @@ export default function App() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditPhotoURL(reader.result as string);
+      reader.onloadend = async () => {
+        const imageData = reader.result as string;
+        const resizedAvatar = imageData.length > 180_000 ? await resizeImage(imageData, 180_000) : imageData;
+        setEditPhotoURL(resizedAvatar);
         setShowAvatarPicker(false);
       };
       reader.readAsDataURL(file);
+      e.target.value = '';
     }
   };
 
