@@ -2342,8 +2342,14 @@ export default function App() {
   const [isSending, setIsSending] = useState(false);
 
   const processAIResponse = async (userMsg: string, aiChatId: string, imageData?: string | null) => {
-    if (!user || !profile?.publicKey) return;
+    if (!user) return;
     try {
+      if (!profile?.publicKey || profile.publicKey === 'PENDING_REGISTRATION') {
+        const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+        await updateDoc(doc(db, 'users_public', user.uid), { publicKey: keys.publicKey });
+        setProfile(prev => prev ? { ...prev, publicKey: keys.publicKey } : prev);
+      }
+
       const history = messages
         .filter(m => m.decryptedContent)
         .slice(-10)
@@ -3227,12 +3233,10 @@ export default function App() {
     }
 
     if (!targetUid || targetUid.startsWith('temp-')) {
-      if (otherUser.email) {
-        targetUid = otherUser.email.toLowerCase(); // Fallback to email if user not registered yet
-      } else {
-        alert("User must have an email or be registered first to chat.");
-        return;
-      }
+      await handleSaveContact(otherUser);
+      showToast('Contact saved. Chat will unlock when this user signs in to Aegis Guard.');
+      setShowNewChat(false);
+      return;
     }
 
     // 1. Generate unique chatId
@@ -6009,14 +6013,16 @@ export default function App() {
                             const isPhone = /^\+?[\d\s-]{10,}$/.test(trimmedSearchQuery);
                             
                             if (isEmail || isPhone) {
-                              startNewChat({
+                              const newContact = {
                                 uid: 'temp-' + Date.now(),
                                 displayName: trimmedSearchQuery,
                                 email: isEmail ? trimmedSearchQuery : '',
                                 phoneNumber: isPhone ? trimmedSearchQuery : '',
                                 photoURL: '',
                                 publicKey: ''
-                              } as UserProfile);
+                              } as UserProfile;
+                              handleSaveContact(newContact);
+                              showToast('Contact saved. Search registered users to start secure chat.');
                               setShowNewChat(false);
                               setUserSearchQuery('');
                             } else {
@@ -6093,7 +6099,7 @@ export default function App() {
                             publicKey: ''
                           };
                           await handleSaveContact(newContact);
-                          await startNewChat(newContact as UserProfile);
+                          showToast('Contact saved. Search registered users to start secure chat.');
                           setShowNewChat(false);
                           setKeypadInput('');
                           setKeypadName('');
@@ -6152,7 +6158,7 @@ export default function App() {
                           publicKey: ''
                         };
                         await handleSaveContact(newContact);
-                        await startNewChat(newContact as UserProfile);
+                        showToast('Contact saved. Search registered users to start secure chat.');
                         setShowNewChat(false);
                         setEmailInputSearch('');
                     }}
