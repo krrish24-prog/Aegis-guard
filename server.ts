@@ -830,13 +830,12 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
   } else {
     const distPath = path.resolve(process.cwd(), "dist");
     app.use(express.static(distPath, {
-      maxAge: '1y',
-      immutable: true,
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith('.html') || filePath.endsWith('version.json') || filePath.endsWith('sw.js')) {
-          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-          res.setHeader('Pragma', 'no-cache');
-          res.setHeader('Expires', '0');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        if (filePath.endsWith('.html') || filePath.endsWith('sw.js')) {
+          res.setHeader('Clear-Site-Data', '"cache"');
         }
       }
     }));
@@ -844,6 +843,7 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
+      res.setHeader('Clear-Site-Data', '"cache"');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
