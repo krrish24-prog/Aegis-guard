@@ -2412,6 +2412,7 @@ export default function App() {
       const decoder = new TextDecoder();
       let aiText = "";
       let streamBuffer = "";
+      let streamError = "";
 
       setStreamingAIMessage({ chatId: aiChatId, text: "" });
 
@@ -2435,6 +2436,7 @@ export default function App() {
                 aiText += data.text;
                 setStreamingAIMessage({ chatId: aiChatId, text: aiText });
               } else if (data.error) {
+                streamError = data.error;
                 showToast("AI Error: " + data.error);
                 break;
               }
@@ -2445,6 +2447,10 @@ export default function App() {
       
       setStreamingAIMessage(null);
       
+      if (!aiText && streamError) {
+        await saveAIResponse(`AI backend error: ${streamError}. Check Render environment variable NVIDIA_MODEL and NVIDIA_API_KEY.`);
+        return;
+      }
       if (!aiText) return;
       await saveAIResponse(aiText);
     } catch (err) {

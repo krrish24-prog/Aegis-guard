@@ -13,7 +13,7 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const DEFAULT_NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/diffusiongemma-26b-a4b-it";
+const DEFAULT_NVIDIA_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
 
 const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwrite.io/v1").replace(/\/$/, "");
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
@@ -40,7 +40,7 @@ type AiClient =
 
 const getAIClient = (): AiClient | null => {
   if (process.env.NVIDIA_API_KEY) {
-    console.log("NVIDIA API key loaded");
+    console.log(`NVIDIA API key loaded; using model ${process.env.NVIDIA_MODEL || DEFAULT_NVIDIA_MODEL}`);
     return {
       type: "nvidia",
       apiKey: process.env.NVIDIA_API_KEY,
