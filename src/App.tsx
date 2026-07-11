@@ -828,7 +828,7 @@ export default function App() {
         id: chatRef.id,
         type: 'group',
         groupName: newGroupName,
-        participants: [user.uid, ...selectedGroupParticipants.map(uid => uid)],
+        participants: Array.from(new Set([user.uid, ...selectedGroupParticipants])),
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
         isVerified: verification.isVerified,
@@ -2358,6 +2358,38 @@ export default function App() {
           content: (m.decryptedContent || '').slice(0, 2_000),
         }));
 
+      const saveAIResponse = async (aiText: string) => {
+        if (!aiText.trim()) return;
+        const msgRef = doc(collection(db, 'conversations', aiChatId, 'messages'));
+        await setDoc(msgRef, {
+          id: msgRef.id,
+          chatId: aiChatId,
+          senderId: 'aegis-guard@aegis.ai',
+          content: aiText,
+          encryptedSessionKeys: {},
+          iv: "",
+          timestamp: serverTimestamp(),
+        });
+        await updateDoc(doc(db, 'conversations', aiChatId), {
+          updatedAt: serverTimestamp(),
+          lastMessage: {
+            content: aiText,
+            senderId: 'aegis-guard@aegis.ai',
+            timestamp: serverTimestamp(),
+            isEncrypted: false
+          }
+        });
+      };
+
+      const localFallbackResponse = () => {
+        const text = (userMsg || '').trim();
+        if (!text) return 'I am ready. Send a message and I will help with clear, security-aware guidance.';
+        if (/password|otp|pin|bank|login|link|scam|phish/i.test(text)) {
+          return 'This may involve sensitive security information. Do not share OTPs, PINs, passwords, or banking details. Verify the sender through an official channel before taking action.';
+        }
+        return `I received your message: "${text.slice(0, 180)}". The cloud AI service is temporarily unavailable, but the prototype is still running. I can continue with basic safety guidance until the backend AI key is restored.`;
+      };
+
       const res = await authenticatedFetch("/api/chat", {
         method: "POST",
         body: JSON.stringify({
@@ -2369,15 +2401,8 @@ export default function App() {
 
       if (!res.ok) {
         setStreamingAIMessage(null);
-        
-        try {
-          const errData = await res.json();
-          console.error("AI API Error:", errData);
-          showToast(`AI Assistant error: ${errData.error || res.statusText}`);
-        } catch {
-          showToast("AI Assistant unavailable");
-        }
-        
+        await saveAIResponse(localFallbackResponse());
+        showToast("AI cloud unavailable. Using prototype response.");
         return;
       }
       
@@ -2421,32 +2446,22 @@ export default function App() {
       setStreamingAIMessage(null);
       
       if (!aiText) return;
-
-      const msgRef = doc(collection(db, 'conversations', aiChatId, 'messages'));
-
-      const msgData = {
-        id: msgRef.id,
-        chatId: aiChatId,
-        senderId: 'aegis-guard@aegis.ai',
-        content: aiText,
-        encryptedSessionKeys: {},
-        iv: "",
-        timestamp: serverTimestamp(),
-      };
-
-      await setDoc(msgRef, msgData);
-      
-      await updateDoc(doc(db, 'conversations', aiChatId), {
-        updatedAt: serverTimestamp(),
-        lastMessage: {
-          content: aiText,
-          senderId: 'aegis-guard@aegis.ai',
-          timestamp: serverTimestamp(),
-          isEncrypted: false
-        }
-      });
+      await saveAIResponse(aiText);
     } catch (err) {
       console.error("AI Error:", err);
+      try {
+        const msgRef = doc(collection(db, 'conversations', aiChatId, 'messages'));
+        await setDoc(msgRef, {
+          id: msgRef.id,
+          chatId: aiChatId,
+          senderId: 'aegis-guard@aegis.ai',
+          content: 'AI connection is temporarily unavailable. Please check backend AI environment settings, then try again.',
+          encryptedSessionKeys: {},
+          iv: "",
+          timestamp: serverTimestamp(),
+        });
+      } catch {}
+      showToast("AI assistant connection failed");
     }
   };
 
@@ -7040,17 +7055,19 @@ export default function App() {
                     {allUsers.length > 0 ? (
                       allUsers.map((u, i) => (
                         <button 
-                          key={`${u.email}-${i}`}
+                          key={`${u.uid || u.email}-${i}`}
                           onClick={() => {
-                            if (selectedGroupParticipants.includes(u.email)) {
-                              setSelectedGroupParticipants(selectedGroupParticipants.filter(email => email !== u.email));
+                            const participantId = u.uid || u.email?.toLowerCase();
+                            if (!participantId) return;
+                            if (selectedGroupParticipants.includes(participantId)) {
+                              setSelectedGroupParticipants(selectedGroupParticipants.filter(id => id !== participantId));
                             } else {
-                              setSelectedGroupParticipants([...selectedGroupParticipants, u.email]);
+                              setSelectedGroupParticipants([...selectedGroupParticipants, participantId]);
                             }
                           }}
                           className={cn(
                             "w-full p-3 rounded-xl border flex items-center justify-between transition-all",
-                            selectedGroupParticipants.includes(u.email) 
+                            selectedGroupParticipants.includes(u.uid || u.email?.toLowerCase() || '') 
                               ? "bg-emerald-50 border-emerald-200" 
                               : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
                           )}
@@ -7064,7 +7081,7 @@ export default function App() {
                               <p className="text-[10px] text-zinc-400">{u.email}</p>
                             </div>
                           </div>
-                          {selectedGroupParticipants.includes(u.email) && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                          {selectedGroupParticipants.includes(u.uid || u.email?.toLowerCase() || '') && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
                         </button>
                       ))
                     ) : (
