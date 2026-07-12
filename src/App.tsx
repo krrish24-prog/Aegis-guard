@@ -1413,6 +1413,24 @@ export default function App() {
         );
         
         const snapshot = await getDocs(q);
+        const ensureGreeting = async (chatId: string) => {
+          const greetingRef = doc(db, 'conversations', chatId, 'messages', 'aegis-guard-welcome');
+          const greetingSnap = await getDoc(greetingRef);
+          if (!greetingSnap.exists()) {
+            await setDoc(greetingRef, {
+              id: greetingRef.id,
+              chatId,
+              senderId: 'aegis-guard@aegis.ai',
+              content: 'Hi, I am Aegis Guard. Ask me anything, and I will keep answers clear, practical, and security-aware.',
+              encryptedSessionKeys: {},
+              iv: "",
+              timestamp: serverTimestamp(),
+              delivered: true,
+              seen: false,
+            });
+          }
+        };
+
         if (snapshot.empty) {
           const newChatRef = doc(collection(db, 'conversations'));
           await setDoc(newChatRef, {
@@ -1427,9 +1445,17 @@ export default function App() {
               timestamp: serverTimestamp()
             }
           });
+          await ensureGreeting(newChatRef.id);
           setAegisGuardChatId(newChatRef.id);
         } else {
-          setAegisGuardChatId(snapshot.docs[0].id);
+          const chatDoc = snapshot.docs[0];
+          await updateDoc(doc(db, 'conversations', chatDoc.id), {
+            participants: arrayUnion(user.uid, 'aegis-guard@aegis.ai'),
+            deletedFor: arrayRemove(user.uid),
+            updatedAt: serverTimestamp(),
+          });
+          await ensureGreeting(chatDoc.id);
+          setAegisGuardChatId(chatDoc.id);
         }
       } catch (error) {
         handleFirestoreError(error, OperationType.GET, 'chats');
@@ -2310,7 +2336,15 @@ export default function App() {
 
   const analyzeMessage = async (msg: Message) => {
     if (!selectedChatId || !profile || !user) return;
-    const chat = chats.find(c => c.id === selectedChatId);
+    let chat = chats.find(c => c.id === selectedChatId);
+    if (!chat && selectedChatId === aegisGuardChatId) {
+      chat = {
+        id: selectedChatId,
+        type: 'ai',
+        participants: [user.uid, 'aegis-guard@aegis.ai'],
+        updatedAt: Timestamp.now(),
+      } as Chat;
+    }
     if (!chat || chat.type === 'ai' || msg.senderId === 'aegis-guard@aegis.ai') return;
     const analysis = await analyzeDecryptedMessage(msg, { chatId: selectedChatId, userId: user.uid });
     if (analysis) {
