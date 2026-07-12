@@ -828,7 +828,10 @@ export default function App() {
         id: chatRef.id,
         type: 'group',
         groupName: newGroupName,
-        participants: Array.from(new Set([user.uid, ...selectedGroupParticipants])),
+        participants: normalizeParticipantList(
+          [user.uid, ...selectedGroupParticipants],
+          [{ uid: user.uid, email: user.email }, ...allUsers.map((u) => ({ uid: u.uid, email: u.email }))]
+        ),
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
         isVerified: verification.isVerified,
@@ -2177,45 +2180,80 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    const q = query(
-      collection(db, 'conversations'),
-      where('participants', 'array-contains', user.uid)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const chatList = snapshot.docs
-        .map(doc => ({ id: doc.id, ...doc.data() } as Chat))
+    const toChatList = (snapshot: { docs: { id: string; data: () => Record<string, unknown> }[] }) =>
+      snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() } as Chat))
         .filter(chat => !chat.deletedFor?.includes(user.uid));
-      
+
+    const sortChats = (chatList: Chat[]) => {
       chatList.sort((a, b) => {
         const timeA = a.updatedAt?.toMillis() || 0;
         const timeB = b.updatedAt?.toMillis() || 0;
         return timeB - timeA;
       });
-      
-      setChats(chatList);
+      return chatList;
+    };
+
+    let uidChats: Chat[] = [];
+    let emailChats: Chat[] = [];
+
+    const mergeChats = () => {
+      const byId = new Map<string, Chat>();
+      for (const chat of [...uidChats, ...emailChats]) byId.set(chat.id, chat);
+      setChats(sortChats(Array.from(byId.values())));
       setFirestoreError(null);
-    }, (error) => {
+    };
+
+    const onError = (error: { code?: string }) => {
       if (error.code === 'unavailable') {
         setFirestoreError("Could not connect to the security database. Please check your internet connection.");
       }
       handleFirestoreError(error, OperationType.LIST, 'conversations');
-    });
+    };
 
-    return unsubscribe;
+    const qUid = query(
+      collection(db, 'conversations'),
+      where('participants', 'array-contains', user.uid)
+    );
+    const unsubUid = onSnapshot(qUid, (snapshot) => {
+      uidChats = toChatList(snapshot);
+      mergeChats();
+    }, onError);
+
+    const userEmail = user.email?.toLowerCase();
+    let unsubEmail = () => {};
+    if (userEmail) {
+      const qEmail = query(
+        collection(db, 'conversations'),
+        where('participants', 'array-contains', userEmail)
+      );
+      unsubEmail = onSnapshot(qEmail, (snapshot) => {
+        emailChats = toChatList(snapshot);
+        mergeChats();
+      }, onError);
+    }
+
+    return () => { unsubUid(); unsubEmail(); };
   }, [user]);
 
   useEffect(() => {
-    if (!user || chats.length === 0 || allUsers.length === 0) return;
-    
-    // Migrate legacy email-based participants to UID-only lists
+    if (!user || chats.length === 0) return;
+
+    const usersForNorm = [
+      { uid: user.uid, email: user.email },
+      ...allUsers.map((u) => ({ uid: u.uid, email: u.email })),
+    ];
+    const userKeys = new Set([user.uid, user.email?.toLowerCase()].filter(Boolean) as string[]);
+
     chats.forEach(async (chat) => {
       if (!chat.participants?.length) return;
 
-      const normalized = normalizeParticipantList(
-        chat.participants,
-        allUsers.map((u) => ({ uid: u.uid, email: u.email }))
-      );
+      let normalized = normalizeParticipantList(chat.participants, usersForNorm);
+      const userInChat = chat.participants.some((p) => userKeys.has(p));
+      if (userInChat && !normalized.includes(user.uid)) {
+        normalized = [...normalized, user.uid];
+      }
+
       const sortedCurrent = [...chat.participants].sort().join(',');
       const sortedNormalized = [...normalized].sort().join(',');
 
@@ -2223,6 +2261,7 @@ export default function App() {
         try {
           await updateDoc(doc(db, 'conversations', chat.id), {
             participants: normalized,
+            deletedFor: arrayRemove(user.uid),
           });
         } catch (e) {
           console.error('Participant normalization failed', e);
@@ -7097,8 +7136,8 @@ export default function App() {
                         <button 
                           key={`${u.uid || u.email}-${i}`}
                           onClick={() => {
-                            const participantId = u.uid || u.email?.toLowerCase();
-                            if (!participantId) return;
+                            const participantId = u.uid;
+                            if (!participantId || participantId.startsWith('temp-')) return;
                             if (selectedGroupParticipants.includes(participantId)) {
                               setSelectedGroupParticipants(selectedGroupParticipants.filter(id => id !== participantId));
                             } else {
@@ -7107,7 +7146,7 @@ export default function App() {
                           }}
                           className={cn(
                             "w-full p-3 rounded-xl border flex items-center justify-between transition-all",
-                            selectedGroupParticipants.includes(u.uid || u.email?.toLowerCase() || '') 
+                            selectedGroupParticipants.includes(u.uid || '') 
                               ? "bg-emerald-50 border-emerald-200" 
                               : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
                           )}
@@ -7121,7 +7160,7 @@ export default function App() {
                               <p className="text-[10px] text-zinc-400">{u.email}</p>
                             </div>
                           </div>
-                          {selectedGroupParticipants.includes(u.uid || u.email?.toLowerCase() || '') && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                          {selectedGroupParticipants.includes(u.uid || '') && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
                         </button>
                       ))
                     ) : (
