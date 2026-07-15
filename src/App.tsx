@@ -3591,6 +3591,9 @@ export default function App() {
   // --- Render Helpers ---
 
   const selectedChat = useMemo(() => chats.find(c => c.id === selectedChatId), [chats, selectedChatId]);
+  const reportContent = showSecurityReport?.decryptedContent || '';
+  const reportIsUndecryptable = reportContent.includes('[Encrypted before you joined]') || reportContent.includes('[Unable to decrypt message]');
+  const reportIsSafe = reportIsUndecryptable || (showSecurityReport?.securityStatus?.isSafe ?? true);
 
   useEffect(() => {
     if (selectedChatId && !selectedChat) {
@@ -7701,19 +7704,19 @@ export default function App() {
               exit={{ opacity: 0, y: 20 }}
               className="w-full max-w-lg bg-white rounded-[32px] shadow-2xl overflow-hidden border border-red-100"
             >
-              <div className={`p-8 border-b flex items-center justify-between ${ (showSecurityReport.securityStatus?.isSafe ?? true) ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
+              <div className={`p-8 border-b flex items-center justify-between ${ reportIsSafe ? 'bg-emerald-50 border-emerald-100' : 'bg-red-50 border-red-100'}`}>
                 <div className="flex items-center gap-4">
                   <SecurityScoreCircle 
-                    score={showSecurityReport.securityStatus?.score ?? (showSecurityReport.securityStatus?.isSafe === false ? 0 : 100)} 
-                    isSafe={showSecurityReport.securityStatus?.isSafe ?? true} 
+                    score={reportIsUndecryptable ? 100 : (showSecurityReport.securityStatus?.score ?? (showSecurityReport.securityStatus?.isSafe === false ? 0 : 100))} 
+                    isSafe={reportIsSafe} 
                   />
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${ (showSecurityReport.securityStatus?.isSafe ?? true) ? 'bg-emerald-600 shadow-emerald-600/20' : 'bg-red-600 shadow-red-600/20'}`}>
-                    {(showSecurityReport.securityStatus?.isSafe ?? true) ? <ShieldCheck className="w-7 h-7 text-white" /> : <ShieldAlert className="w-7 h-7 text-white" />}
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg ${ reportIsSafe ? 'bg-emerald-600 shadow-emerald-600/20' : 'bg-red-600 shadow-red-600/20'}`}>
+                    {reportIsSafe ? <ShieldCheck className="w-7 h-7 text-white" /> : <ShieldAlert className="w-7 h-7 text-white" />}
                   </div>
                   <div>
-                    <h2 className={`text-xl font-bold ${(showSecurityReport.securityStatus?.isSafe ?? true) ? 'text-emerald-900' : 'text-red-900'}`}>{(showSecurityReport.securityStatus?.isSafe ?? true) ? 'Security Verified' : 'Security Analysis Report'}</h2>
-                    <p className={`text-xs font-semibold uppercase tracking-widest ${(showSecurityReport.securityStatus?.isSafe ?? true) ? 'text-emerald-600' : 'text-red-600'}`}>
-                      {(showSecurityReport.securityStatus?.isSafe ?? true) ? 'Status: Verified' : 'Threat Level: Critical'}
+                    <h2 className={`text-xl font-bold ${reportIsSafe ? 'text-emerald-900' : 'text-red-900'}`}>{reportIsSafe ? 'Security Verified' : 'Security Analysis Report'}</h2>
+                    <p className={`text-xs font-semibold uppercase tracking-widest ${reportIsSafe ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {reportIsUndecryptable ? 'Status: Encrypted content unavailable' : (reportIsSafe ? 'Status: Verified' : 'Threat Level: Critical')}
                     </p>
                   </div>
                 </div>

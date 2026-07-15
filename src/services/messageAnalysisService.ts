@@ -45,6 +45,9 @@ export async function analyzeDecryptedMessage(
   if (pending.has(msg.id) || completed.has(msg.id)) return null;
 
   const content = msg.decryptedContent ?? '';
+  if (content.includes('[Encrypted before you joined]') || content.includes('[Unable to decrypt message]')) {
+    return null;
+  }
   const stillEncrypted = msg.encryptedSessionKeys && content === msg.content;
   if (stillEncrypted && !msg.decryptedImageUrl && !msg.decryptedFileData) return null;
 
