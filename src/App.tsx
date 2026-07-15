@@ -4543,10 +4543,10 @@ export default function App() {
                                 </button>
                                 <div className="flex gap-2">
                                   <button 
-                                    onClick={() => alert("Reporting threat...")}
+                                    onClick={() => alert("Report accepted by AEGIS GUARD DEV.")}
                                     className="flex-1 py-2 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition-colors"
                                   >
-                                    Report Sender
+                                    Report to AGD
                                   </button>
                                   <button 
                                     onClick={() => setRevealedMessages(prev => [...prev, msg.id])}
@@ -7817,12 +7817,12 @@ export default function App() {
               <div className="p-6 bg-zinc-50 border-t border-zinc-100 flex gap-3">
                 <button 
                   onClick={() => {
-                    alert("Sender blocked and reported.");
+                    alert("Report accepted by AEGIS GUARD DEV.");
                     setShowSecurityReport(null);
                   }}
                   className="flex-1 py-3 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
                 >
-                  Report Sender
+                  Report to AGD
                 </button>
                 <button 
                   onClick={() => setShowSecurityReport(null)}
