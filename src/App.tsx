@@ -1322,6 +1322,55 @@ export default function App() {
   const [savedMessagesChatId, setSavedMessagesChatId] = useState<string | null>(null);
   const [aegisGuardChatId, setAegisGuardChatId] = useState<string | null>(null);
 
+  const openSavedMessages = async () => {
+    if (!user) return;
+    const existing = chats.find(c => c.type === 'saved' && c.participants?.includes(user.uid));
+    if (existing) {
+      setSelectedChatId(existing.id);
+      setActiveSection('chats');
+      return;
+    }
+    const chatRef = savedMessagesChatId ? doc(db, 'conversations', savedMessagesChatId) : doc(collection(db, 'conversations'));
+    await setDoc(chatRef, {
+      id: chatRef.id,
+      participants: [user.uid],
+      type: 'saved',
+      deletedFor: arrayRemove(user.uid),
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      lastMessage: {
+        content: 'Your private space for notes and media',
+        senderId: user.uid,
+        timestamp: serverTimestamp()
+      }
+    }, { merge: true });
+    setSavedMessagesChatId(chatRef.id);
+    setSelectedChatId(chatRef.id);
+    setActiveSection('chats');
+  };
+
+  const openAegisGuardChat = async () => {
+    if (!user) return;
+    const existing = chats.find(c => c.type === 'ai' && c.participants?.includes(user.uid));
+    const chatRef = existing ? doc(db, 'conversations', existing.id) : (aegisGuardChatId ? doc(db, 'conversations', aegisGuardChatId) : doc(collection(db, 'conversations')));
+    await setDoc(chatRef, {
+      id: chatRef.id,
+      participants: [user.uid, 'aegis-guard@aegis.ai'],
+      type: 'ai',
+      deletedFor: arrayRemove(user.uid),
+      updatedAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      lastMessage: {
+        content: 'Hi, I am Aegis Guard. Ask me anything, and I will keep answers clear, practical, and security-aware.',
+        senderId: 'aegis-guard@aegis.ai',
+        timestamp: serverTimestamp()
+      }
+    }, { merge: true });
+    setAegisGuardChatId(chatRef.id);
+    setSelectedChatId(chatRef.id);
+    setActiveSection('chats');
+  };
+
   const t = translations[language] || translations.en;
 
   const updateLanguage = async (newLang: Language) => {
@@ -3327,10 +3376,7 @@ export default function App() {
     }
 
     if (!targetUid || targetUid.startsWith('temp-')) {
-      await handleSaveContact(otherUser);
-      showToast('Contact saved. Chat will unlock when this user signs in to Aegis Guard.');
-      setShowNewChat(false);
-      return;
+      targetUid = otherUser.email?.toLowerCase() || otherUser.phoneNumber || otherUser.displayName || `contact-${Date.now()}`;
     }
 
     // 1. Generate unique chatId
@@ -3350,10 +3396,7 @@ export default function App() {
       const newChatData = {
         id: chatId,
         type: 'direct',
-        participants: normalizeParticipantList(
-          [user.uid, targetUid],
-          allUsers.map((u) => ({ uid: u.uid, email: u.email }))
-        ),
+        participants: Array.from(new Set([user.uid, targetUid])),
         deletedFor: arrayRemove(user.uid),
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
@@ -4064,12 +4107,7 @@ export default function App() {
                 </div>
 
                 <button 
-                  onClick={() => {
-                    if (savedMessagesChatId) {
-                      setSelectedChatId(savedMessagesChatId);
-                      setActiveSection('chats');
-                    }
-                  }}
+                  onClick={openSavedMessages}
                   className={cn(
                     "w-full p-3 rounded-xl flex items-center gap-3 transition-all border",
                     theme === 'glow' 
@@ -4086,12 +4124,7 @@ export default function App() {
                   <span className="text-xs font-bold">{t.savedMessages || 'Saved Messages'}</span>
                 </button>
                 <button 
-                  onClick={() => {
-                    if (aegisGuardChatId) {
-                      setSelectedChatId(aegisGuardChatId);
-                      setActiveSection('chats');
-                    }
-                  }}
+                  onClick={openAegisGuardChat}
                   className={cn(
                     "w-full p-3 rounded-xl flex items-center gap-3 transition-all border",
                     theme === 'glow' 
@@ -6116,7 +6149,7 @@ export default function App() {
                                 publicKey: ''
                               } as UserProfile;
                               handleSaveContact(newContact);
-                              showToast('Contact saved. Search registered users to start secure chat.');
+                              startNewChat(newContact);
                               setShowNewChat(false);
                               setUserSearchQuery('');
                             } else {
@@ -6193,7 +6226,7 @@ export default function App() {
                             publicKey: ''
                           };
                           await handleSaveContact(newContact);
-                          showToast('Contact saved. Search registered users to start secure chat.');
+                          await startNewChat(newContact as UserProfile);
                           setShowNewChat(false);
                           setKeypadInput('');
                           setKeypadName('');
@@ -6252,7 +6285,7 @@ export default function App() {
                           publicKey: ''
                         };
                         await handleSaveContact(newContact);
-                        showToast('Contact saved. Search registered users to start secure chat.');
+                        await startNewChat(newContact as UserProfile);
                         setShowNewChat(false);
                         setEmailInputSearch('');
                     }}
