@@ -4546,7 +4546,7 @@ export default function App() {
                                     onClick={() => alert("Reporting threat...")}
                                     className="flex-1 py-2 bg-red-600 text-white rounded-lg text-xs font-bold hover:bg-red-700 transition-colors"
                                   >
-                                    Report & Block
+                                    Report Sender
                                   </button>
                                   <button 
                                     onClick={() => setRevealedMessages(prev => [...prev, msg.id])}
@@ -7804,7 +7804,7 @@ export default function App() {
                   <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
                     <ShieldCheck className="w-5 h-5 text-emerald-600 mb-2" />
                     <h4 className="text-xs font-bold text-emerald-900 uppercase mb-1">Recommendation</h4>
-                    <p className="text-[10px] text-emerald-700">Delete this message immediately and block the sender to prevent further risks.</p>
+                    <p className="text-[10px] text-emerald-700">Report this sender and avoid opening suspicious links or sharing sensitive information.</p>
                   </div>
                   <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
                     <Info className="w-5 h-5 text-zinc-400 mb-2" />
@@ -7822,7 +7822,7 @@ export default function App() {
                   }}
                   className="flex-1 py-3 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
                 >
-                  Block & Report Sender
+                  Report Sender
                 </button>
                 <button 
                   onClick={() => setShowSecurityReport(null)}

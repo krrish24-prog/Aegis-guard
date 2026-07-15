@@ -40,6 +40,17 @@ const GROUP_VERIFICATION_UNAVAILABLE: GroupVerification = {
 export class SecurityService {
   private static analysisCache = new Map<string, SecurityAnalysis>();
 
+  private static normalizeScore(result: any, content: string): number {
+    const raw = Number(result.score);
+    if (Number.isFinite(raw) && raw >= 0 && raw <= 100) return Math.round(raw);
+    if (result.isSafe === true) return 95;
+    const text = `${content} ${result.summary || ''} ${(result.points || []).join(' ')}`.toLowerCase();
+    if (/otp|password|pin|bank|wallet|payment|urgent|verify/.test(text)) return 12;
+    if (/g00gle|homograph|fake|phishing|malicious|deceive|suspicious link/.test(text)) return 18;
+    if (/http|\.com|\.xyz|\.top|\.site/.test(text)) return 35;
+    return 55;
+  }
+
   private static async hashContent(content: string, imageUrl?: string): Promise<string> {
     const input = content + (imageUrl ? imageUrl.substring(0, 1000) : '');
     const encoder = new TextEncoder();
@@ -93,12 +104,12 @@ export class SecurityService {
       let threatType = result.threatType || 'none';
       if (result.isSafe === true) {
         threatType = 'none';
-        result.score = result.score || 100;
+        result.score = this.normalizeScore(result, content);
       }
 
       const finalResult: SecurityAnalysis = {
         isSafe: result.isSafe ?? false,
-        score: result.score ?? 0,
+        score: this.normalizeScore(result, content),
         threatType: threatType,
         summary: result.summary || "No summary provided.",
         points: result.points || ["No detailed points available."],
