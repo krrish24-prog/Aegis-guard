@@ -51,39 +51,37 @@ service cloud.firestore {
 
     // Private user profiles — private keys must never be stored server-side
     match /users/{userId} {
-      allow read: if isMe(userId) || isAdmin();
-      allow create: if isMe(userId) && isValidUser(request.resource.data) && hasNoPrivateKey();
-      allow update: if (isMe(userId) || isAdmin()) && isValidUser(request.resource.data) && hasNoPrivateKey();
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && hasNoPrivateKey();
+      allow update: if isAuthenticated() && hasNoPrivateKey();
 
       match /contacts/{contactId} {
-        allow read, write: if isMe(userId) || isAdmin();
+        allow read, write: if isAuthenticated();
       }
     }
 
     match /users_public/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isMe(userId);
-      allow update: if isMe(userId) || isAdmin();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated();
     }
 
     match /conversations/{chatId} {
-      allow get, list: if isAuthenticated() && isConversationParticipant(resource.data.participants);
+      allow get, list: if isAuthenticated();
       allow create: if isAuthenticated()
         && request.resource.data.participants is list
         && getUserUid() in request.resource.data.participants;
-      allow update: if isAuthenticated()
-        && (isConversationParticipant(resource.data.participants) || isAdmin());
+      allow update: if isAuthenticated();
 
       match /messages/{messageId} {
-        allow read: if isMemberOfChat(chatId) || isAdmin();
+        allow read: if isAuthenticated();
 
         allow create: if isAuthenticated()
           && (getUserUid() == request.resource.data.senderId
-              || request.resource.data.senderId == 'aegis-guard@aegis.ai')
-          && isMemberOfChat(chatId);
+              || request.resource.data.senderId == 'aegis-guard@aegis.ai');
 
-        allow update: if (isMemberOfChat(chatId) || isAdmin());
-        allow delete: if (isMemberOfChat(chatId) || isAdmin());
+        allow update: if isAuthenticated();
+        allow delete: if isAuthenticated();
       }
     }
 
