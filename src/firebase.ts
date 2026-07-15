@@ -37,7 +37,6 @@ const firebaseConfig = {
   appId: firebaseConfigRaw.appId || '1:1234567890:web:abcdef',
   apiKey: firebaseConfigRaw.apiKey || 'fake-api-key',
   authDomain: firebaseConfigRaw.authDomain || 'demo.firebaseapp.com',
-  firestoreDatabaseId: firebaseConfigRaw.firestoreDatabaseId || '',
   storageBucket: firebaseConfigRaw.storageBucket || 'demo.appspot.com',
   messagingSenderId: firebaseConfigRaw.messagingSenderId || '123456789',
   measurementId: firebaseConfigRaw.measurementId || ''
@@ -48,10 +47,10 @@ export { app };
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
-// Use initializeFirestore with long polling to bypass potential proxy/websocket issues
+// Use the default Firestore database where firebase.json deploys the app rules.
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
-}, firebaseConfig.firestoreDatabaseId || undefined);
+});
 export const googleProvider = new GoogleAuthProvider();
 
 export enum OperationType {
