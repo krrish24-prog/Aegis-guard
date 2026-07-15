@@ -32,11 +32,12 @@ service cloud.firestore {
     }
 
     function isValidUser(data) {
-      return data.uid is string && data.email is string;
+      return data.uid is string;
     }
 
     function isConversationParticipant(participants) {
-      return participants.hasAny([getUserUid(), getUserEmail()]);
+      return participants is list
+        && (getUserUid() in participants || (getUserEmail() != '' && getUserEmail() in participants));
     }
 
     function conversationDoc(chatId) {
@@ -66,9 +67,10 @@ service cloud.firestore {
     }
 
     match /conversations/{chatId} {
-      allow read: if isAuthenticated() && isConversationParticipant(resource.data.participants);
+      allow get, list: if isAuthenticated() && isConversationParticipant(resource.data.participants);
       allow create: if isAuthenticated()
-        && isConversationParticipant(request.resource.data.participants);
+        && request.resource.data.participants is list
+        && getUserUid() in request.resource.data.participants;
       allow update: if isAuthenticated()
         && (isConversationParticipant(resource.data.participants) || isAdmin());
 
