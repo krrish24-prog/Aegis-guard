@@ -40,15 +40,32 @@ const GROUP_VERIFICATION_UNAVAILABLE: GroupVerification = {
 export class SecurityService {
   private static analysisCache = new Map<string, SecurityAnalysis>();
 
-  private static normalizeScore(result: any, content: string): number {
+  private static clampScore(score: number): number {
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private static normalizeScore(result: any, content: string, threatType: SecurityAnalysis['threatType'] = 'none'): number {
     const raw = Number(result.score);
-    if (Number.isFinite(raw) && raw >= 0 && raw <= 100) return Math.round(raw);
-    if (result.isSafe === true) return 95;
+    if (Number.isFinite(raw) && raw >= 0 && raw <= 100) {
+      if (result.isSafe === false && raw > 70) return 35;
+      return this.clampScore(raw);
+    }
+
+    if (result.isSafe === true || threatType === 'none') return 96;
+
     const text = `${content} ${result.summary || ''} ${(result.points || []).join(' ')}`.toLowerCase();
-    if (/otp|password|pin|bank|wallet|payment|urgent|verify/.test(text)) return 12;
-    if (/g00gle|homograph|fake|phishing|malicious|deceive|suspicious link/.test(text)) return 18;
-    if (/http|\.com|\.xyz|\.top|\.site/.test(text)) return 35;
-    return 55;
+    let risk = 0;
+
+    if (/otp|one[- ]?time|password|pin|cvv|seed phrase|private key|bank|wallet|payment|login|account/.test(text)) risk += 35;
+    if (/urgent|immediately|verify|blocked|suspended|locked|limited|act now|click here/.test(text)) risk += 20;
+    if (/g00gle|paypa1|micros0ft|homograph|spoof|fake|phishing|malicious|deceive|credential/.test(text)) risk += 35;
+    if (/(https?:\/\/|www\.|\.com|\.xyz|\.top|\.site|\.icu|\.work|\.ru|\.zip)/.test(text)) risk += 15;
+    if (/attachment|download|apk|exe|macro|document|invoice|pdf/.test(text)) risk += 15;
+
+    if (threatType === 'phishing' || threatType === 'malicious_link') risk += 25;
+    if (threatType === 'steganography' || threatType === 'cryptography') risk += 15;
+
+    return this.clampScore(100 - Math.min(risk, 95));
   }
 
   private static async hashContent(content: string, imageUrl?: string): Promise<string> {
@@ -69,8 +86,15 @@ export class SecurityService {
 
       const phishRegex = /g00gle\.com|bank-login\.xyz|giveaway|bank-login|account-update|payment-failed/i;
       if (phishRegex.test(content) || (content.length > 20 && /[a-z0-9]{10,}\.(xyz|top|site|icu|work)/i.test(content))) {
-         const ret: SecurityAnalysis = {
-          isSafe: false, score: 10, threatType: 'phishing',
+        const threatType: SecurityAnalysis['threatType'] = 'phishing';
+        const ret: SecurityAnalysis = {
+          isSafe: false,
+          score: this.normalizeScore(
+            { isSafe: false, summary: 'Suspicious domain or keywords detected.', points: ['Suspicious domain or keywords detected.'] },
+            content,
+            threatType
+          ),
+          threatType,
           summary: "Suspicious pattern detected by static analyzer.",
           points: ["Suspicious domain or keywords detected."],
           steganographyReport: "N/A", isAnalyzed: true
@@ -104,12 +128,12 @@ export class SecurityService {
       let threatType = result.threatType || 'none';
       if (result.isSafe === true) {
         threatType = 'none';
-        result.score = this.normalizeScore(result, content);
+        result.score = this.normalizeScore(result, content, threatType);
       }
 
       const finalResult: SecurityAnalysis = {
         isSafe: result.isSafe ?? false,
-        score: this.normalizeScore(result, content),
+        score: this.normalizeScore(result, content, threatType),
         threatType: threatType,
         summary: result.summary || "No summary provided.",
         points: result.points || ["No detailed points available."],

@@ -141,9 +141,9 @@ const BrandPanel = () => (
       <motion.div
         initial={{ scale: 0.8, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
-        className="w-16 h-16 bg-emerald-500 rounded-3xl flex items-center justify-center shadow-2xl shadow-emerald-500/30 glow-emerald mb-8"
+        className="w-24 h-24 rounded-3xl overflow-hidden shadow-2xl shadow-emerald-500/30 glow-emerald mb-8 border border-emerald-400/30"
       >
-        <Shield className="w-8 h-8 text-white" />
+        <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
       </motion.div>
       <h1 className="text-4xl font-bold text-white tracking-tight mb-3">Aegis Guard</h1>
       <p className="text-zinc-400 text-lg mb-10 max-w-sm">
@@ -211,8 +211,8 @@ export default function LoginScreen({
         <div className="w-full max-w-md space-y-8">
           {/* Mobile branding */}
           <div className="lg:hidden flex flex-col items-center gap-4">
-            <div className="w-14 h-14 bg-emerald-500 rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/20 glow-emerald">
-              <Shield className="w-7 h-7 text-white" />
+            <div className="w-14 h-14 rounded-2xl overflow-hidden shadow-lg shadow-emerald-500/20 glow-emerald border border-emerald-400/30">
+              <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
             </div>
             <div className="text-center">
               <h1 className="text-2xl font-bold text-white">Aegis Guard</h1>

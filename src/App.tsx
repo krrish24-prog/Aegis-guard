@@ -4032,8 +4032,8 @@ export default function App() {
             <div className="w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0">
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg shadow-emerald-500/20">
-                    <Shield className="w-6 h-6" />
+                  <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-emerald-500/20 border border-emerald-400/30">
+                    <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
                   </div>
                   <div>
                     <h1 className="text-lg font-bold text-zinc-900 leading-tight">{t.aegisGuard || 'Aegis Guard'}</h1>
@@ -5109,8 +5109,8 @@ export default function App() {
             </motion.div>
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
-              <div className="w-24 h-24 bg-emerald-50 rounded-3xl flex items-center justify-center mb-6">
-                <Shield className="w-12 h-12 text-emerald-600" />
+              <div className="w-24 h-24 rounded-3xl overflow-hidden mb-6 shadow-lg shadow-emerald-500/20 border border-emerald-400/20">
+                <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
               </div>
               <h2 className="text-2xl font-bold text-zinc-900 mb-2">{t.secureCommunication || 'Secure Communication'}</h2>
               <p className="text-zinc-500 max-w-sm">
