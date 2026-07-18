@@ -29,6 +29,7 @@ export function mimeFromFileName(name: string): string {
 
 export interface MediaFields {
   content: string;
+  text?: string;
   iv?: string;
   encryptedSessionKey?: string;
   encryptedSessionKeys?: Record<string, string>;
@@ -89,10 +90,10 @@ export async function decryptMessageMedia(
       try {
         decryptedContent = await EncryptionService.decrypt(m.content, sessionKey, m.iv, privateKey);
       } catch {
-        decryptedContent = '🔒 [Unable to decrypt message]';
+        decryptedContent = m.text || '[Unable to decrypt message]';
       }
     } else {
-      decryptedContent = '🔒 [Encrypted before you joined]';
+      decryptedContent = m.text || '[Encrypted before you joined]';
     }
   }
 
@@ -272,3 +273,4 @@ export async function buildFileDataInfo(
 
   return { data, mimeType };
 }
+
