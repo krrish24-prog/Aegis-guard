@@ -3414,7 +3414,7 @@ export default function App() {
         id: chatId,
         type: 'direct',
         participants: Array.from(new Set([user.uid, targetUid])),
-        deletedFor: arrayRemove(user.uid),
+        deletedFor: arrayRemove(user.uid, targetUid, otherUser.email?.toLowerCase() || ''),
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
       };
@@ -7832,11 +7832,13 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100">
-                    <ShieldCheck className="w-5 h-5 text-emerald-600 mb-2" />
-                    <h4 className="text-xs font-bold text-emerald-900 uppercase mb-1">Recommendation</h4>
-                    <p className="text-[10px] text-emerald-700">Report this sender and avoid opening suspicious links or sharing sensitive information.</p>
-                  </div>
+                  {!reportIsSafe && (
+                    <div className="p-4 bg-red-50 rounded-2xl border border-red-100">
+                      <ShieldAlert className="w-5 h-5 text-red-600 mb-2" />
+                      <h4 className="text-xs font-bold text-red-900 uppercase mb-1">Recommendation</h4>
+                      <p className="text-[10px] text-red-700">Report this sender and avoid opening suspicious links or sharing sensitive information.</p>
+                    </div>
+                  )}
                   <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
                     <Info className="w-5 h-5 text-zinc-400 mb-2" />
                     <h4 className="text-xs font-bold uppercase mb-1 text-zinc-900">Detection Engine</h4>
@@ -7846,15 +7848,17 @@ export default function App() {
               </div>
 
               <div className="p-6 bg-zinc-50 border-t border-zinc-100 flex gap-3">
-                <button 
-                  onClick={() => {
-                    alert("Report accepted by AEGIS GUARD DEV.");
-                    setShowSecurityReport(null);
-                  }}
-                  className="flex-1 py-3 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
-                >
-                  Report to AGD
-                </button>
+                {!reportIsSafe && (
+                  <button 
+                    onClick={() => {
+                      alert("Report accepted by AEGIS GUARD DEV.");
+                      setShowSecurityReport(null);
+                    }}
+                    className="flex-1 py-3 bg-red-600 text-white rounded-2xl font-bold hover:bg-red-700 transition-all shadow-lg shadow-red-600/20"
+                  >
+                    Report to AGD
+                  </button>
+                )}
                 <button 
                   onClick={() => setShowSecurityReport(null)}
                   className="px-6 py-3 bg-white border border-zinc-200 text-zinc-600 rounded-2xl font-bold hover:bg-zinc-100 transition-all"
