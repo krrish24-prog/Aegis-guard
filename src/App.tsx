@@ -335,7 +335,9 @@ const SplashScreen = () => (
         className="relative"
       >
         <div className="absolute inset-0 bg-emerald-500 blur-[80px] opacity-40 rounded-full" />
-        <Shield className="w-32 h-32 text-emerald-400 drop-shadow-[0_0_40px_rgba(16,185,129,0.8)] relative z-10" />
+        <div className="w-32 h-32 rounded-[2rem] overflow-hidden relative z-10 border border-emerald-400/30 shadow-2xl shadow-emerald-500/30">
+          <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+        </div>
       </motion.div>
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
@@ -368,7 +370,9 @@ const LoadingScreen = () => (
       transition={{ duration: 0.5 }}
       className="flex flex-col items-center"
     >
-      <Shield className="w-16 h-16 text-emerald-600 mb-4" />
+      <div className="w-16 h-16 rounded-2xl overflow-hidden mb-4 shadow-lg shadow-emerald-500/20 border border-emerald-400/30">
+        <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+      </div>
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Aegis Guard</h1>
       <p className="text-zinc-500 mt-2">Initializing secure environment...</p>
     </motion.div>
