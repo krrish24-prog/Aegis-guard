@@ -3597,7 +3597,18 @@ export default function App() {
   const selectedChat = useMemo(() => chats.find(c => c.id === selectedChatId), [chats, selectedChatId]);
   const reportContent = showSecurityReport?.decryptedContent || '';
   const reportIsUndecryptable = reportContent.includes('[Encrypted before you joined]') || reportContent.includes('[Unable to decrypt message]');
-  const reportIsSafe = reportIsUndecryptable || (showSecurityReport?.securityStatus?.isSafe ?? true);
+  const isUndecryptableMessage = (message?: Pick<Message, 'decryptedContent'> | null) => {
+    const content = message?.decryptedContent || '';
+    return content.includes('[Encrypted before you joined]') || content.includes('[Unable to decrypt message]');
+  };
+  const openSecurityReport = (message: Message) => {
+    if (isUndecryptableMessage(message)) {
+      alert('This message is encrypted and unavailable for analysis. Open a readable message to view the security report.');
+      return;
+    }
+    setShowSecurityReport(message);
+  };
+  const reportIsSafe = showSecurityReport?.securityStatus?.isSafe ?? true;
 
   useEffect(() => {
     if (selectedChatId && !selectedChat) {
@@ -4542,7 +4553,7 @@ export default function App() {
                               </div>
                               <div className="flex flex-col gap-2">
                                 <button 
-                                  onClick={() => setShowSecurityReport(msg as any)}
+                                  onClick={() => openSecurityReport(msg)}
                                   className="w-full py-2 bg-white border border-red-200 text-red-600 rounded-lg text-xs font-bold hover:bg-red-50 transition-colors flex items-center justify-center gap-2"
                                 >
                                   <Info className="w-4 h-4" />
@@ -4757,7 +4768,7 @@ export default function App() {
                                   msg.decryptedContent
                                 )}
                               </div>
-                              {msg.securityStatus?.isAnalyzed && selectedChat?.type !== 'ai' && msg.senderId !== 'aegis-guard@aegis.ai' && msg.status !== 'uploading' && msg.status !== 'sending' && msg.fileUrl !== 'uploading...' && msg.imageUrl !== 'uploading...' && (
+                              {msg.securityStatus?.isAnalyzed && !isUndecryptableMessage(msg) && selectedChat?.type !== 'ai' && msg.senderId !== 'aegis-guard@aegis.ai' && msg.status !== 'uploading' && msg.status !== 'sending' && msg.fileUrl !== 'uploading...' && msg.imageUrl !== 'uploading...' && (
                                 <div className={cn(
                                   "mt-3 p-2 rounded-lg text-[10px] border transition-colors",
                                   msg.securityStatus.isSafe 
@@ -4772,7 +4783,7 @@ export default function App() {
                                     <p className="font-bold text-[10px] uppercase tracking-wider opacity-60">AI Security Summary</p>
                                     <p className="opacity-90 font-medium">{msg.securityStatus.summary}</p>
                                     <button 
-                                      onClick={() => setShowSecurityReport(msg)}
+                                      onClick={() => openSecurityReport(msg)}
                                       className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1 hover:underline mt-1"
                                     >
                                       View Full Report <ChevronRight className="w-3 h-3" />

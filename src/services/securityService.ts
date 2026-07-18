@@ -78,6 +78,18 @@ export class SecurityService {
   }
 
   static async analyzeMessage(content: string, fileDataInfo?: { data: string, mimeType: string }): Promise<SecurityAnalysis> {
+    if (content.includes('[Encrypted before you joined]') || content.includes('[Unable to decrypt message]')) {
+      return {
+        isSafe: true,
+        score: 100,
+        threatType: 'none',
+        summary: 'Encrypted content is unavailable for analysis.',
+        points: ['No readable content was scanned.'],
+        steganographyReport: 'N/A',
+        isAnalyzed: false
+      };
+    }
+
     const contentHash = await this.hashContent(content, fileDataInfo?.data);
 
     try {
