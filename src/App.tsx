@@ -6326,16 +6326,14 @@ export default function App() {
                     disabled={!emailInputSearch.includes('@')}
                     onClick={async () => {
                         const trimmedEmail = emailInputSearch.trim().toLowerCase();
-                        const newContact = {
-                          uid: 'temp-' + Date.now(),
-                          displayName: trimmedEmail.split('@')[0],
-                          email: trimmedEmail,
-                          phoneNumber: '',
-                          photoURL: '',
-                          publicKey: ''
-                        };
+                        const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', trimmedEmail), limit(1)));
+                        if (snap.empty) {
+                          alert('This email is not registered in Aegis Guard yet.');
+                          return;
+                        }
+                        const newContact = { uid: snap.docs[0].id, ...snap.docs[0].data(), email: trimmedEmail } as UserProfile;
                         await handleSaveContact(newContact);
-                        await startNewChat(newContact as UserProfile);
+                        await startNewChat(newContact);
                         setShowNewChat(false);
                         setEmailInputSearch('');
                     }}
