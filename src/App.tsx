@@ -2304,7 +2304,7 @@ export default function App() {
   useEffect(() => {
     if (!user || chats.length === 0) return;
 
-    const usersForNorm = [
+      const usersForNorm = [
       { uid: user.uid, email: user.email },
       ...allUsers.map((u) => ({ uid: u.uid, email: u.email })),
     ];
@@ -2318,6 +2318,11 @@ export default function App() {
       if (userInChat && !normalized.includes(user.uid)) {
         normalized = [...normalized, user.uid];
       }
+      allUsers.forEach((u) => {
+        if (chat.participants.includes(u.uid) && u.email && !normalized.includes(u.email.toLowerCase())) {
+          normalized.push(u.email.toLowerCase());
+        }
+      });
 
       const sortedCurrent = [...chat.participants].sort().join(',');
       const sortedNormalized = [...normalized].sort().join(',');
@@ -2326,7 +2331,7 @@ export default function App() {
         try {
           await updateDoc(doc(db, 'conversations', chat.id), {
             participants: normalized,
-            deletedFor: arrayRemove(user.uid),
+            deletedFor: arrayRemove(user.uid, user.email?.toLowerCase() || ''),
           });
         } catch (e) {
           console.error('Participant normalization failed', e);
@@ -3427,7 +3432,7 @@ export default function App() {
       const newChatData = {
         id: chatId,
         type: 'direct',
-        participants: Array.from(new Set([user.uid, targetUid])),
+        participants: Array.from(new Set([user.uid, user.email?.toLowerCase() || '', targetUid, otherUser.email?.toLowerCase() || ''].filter(Boolean))),
         deletedFor: arrayRemove(user.uid, targetUid, otherUser.email?.toLowerCase() || ''),
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
