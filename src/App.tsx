@@ -2689,13 +2689,13 @@ export default function App() {
             console.log("sendMessage: Fetching doc for:", pId);
             const userDoc = await getDoc(userRef);
             profileExists = userDoc.exists();
-            profileData = profileExists ? (userDoc.data() as UserProfile) : null;
+            profileData = profileExists ? ({ uid: pId, ...userDoc.data() } as UserProfile) : null;
             
             if (!profileExists && pId.includes('@')) {
                const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', pId.toLowerCase()), limit(1)));
                if (!snap.empty) {
                  profileExists = true;
-                 profileData = snap.docs[0].data() as UserProfile;
+                 profileData = { uid: snap.docs[0].id, ...snap.docs[0].data() } as UserProfile;
                }
             }
             break; // Success
@@ -2762,8 +2762,10 @@ export default function App() {
       });
 
       console.log("sendMessage: normalizedValidParticipants", normalizedValidParticipants);
-      console.log("sendMessage: current userEmail", user?.email?.toLowerCase());
-      const isSenderInList = normalizedValidParticipants.some(p => p.email === user?.email?.toLowerCase());
+      const currentUserEmail = user.email?.toLowerCase() || '';
+      const senderKey = currentUserEmail || user.uid;
+      console.log("sendMessage: current userEmail", currentUserEmail);
+      const isSenderInList = normalizedValidParticipants.some(p => p.email === currentUserEmail);
       console.log("sendMessage: isSenderInList", isSenderInList);
 
       if (normalizedValidParticipants.length === 0) {
@@ -2983,7 +2985,7 @@ export default function App() {
       });
       const previewLastMessage = {
         content: lastMessageContent,
-        senderId: user.email.toLowerCase(),
+        senderId: senderKey,
         timestamp: previewTimestamp,
         isEncrypted: chat?.type !== 'ai'
       };
