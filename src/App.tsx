@@ -2974,6 +2974,30 @@ export default function App() {
       console.log("sendMessage: Message saved to queue successfully");
       
       const lastMessageContent = newMessage.trim() ? newMessage : (imageToUse ? 'Image' : (fileToUse ? `File: ${fileToUse.name}` : '[Encrypted Message]'));
+      const previewTimestamp = Timestamp.now();
+      const newUnreadCount = { ...chat?.unreadCount };
+      chat?.participants?.forEach(p => {
+        if (p !== user?.uid && p !== user?.email?.toLowerCase()) {
+          newUnreadCount[p] = (newUnreadCount[p] || 0) + 1;
+        }
+      });
+      const previewLastMessage = {
+        content: lastMessageContent,
+        senderId: user.email.toLowerCase(),
+        timestamp: previewTimestamp,
+        isEncrypted: chat?.type !== 'ai'
+      };
+      setChats(prev => prev.map(c => c.id === selectedChatId ? {
+        ...c,
+        updatedAt: previewTimestamp,
+        unreadCount: newUnreadCount,
+        lastMessage: previewLastMessage
+      } : c));
+      await updateDoc(doc(db, 'conversations', selectedChatId), {
+        updatedAt: previewTimestamp,
+        unreadCount: newUnreadCount,
+        lastMessage: previewLastMessage
+      });
       
       // Clear UI immediately!
       setNewMessage('');
@@ -3148,21 +3172,10 @@ export default function App() {
              }
              
              console.log("sendMessage: Updating chat last message...");
-             const newUnreadCount = { ...chat?.unreadCount };
-             chat?.participants?.forEach(p => {
-               if (p !== user?.uid && p !== user?.email?.toLowerCase()) {
-                 newUnreadCount[p] = (newUnreadCount[p] || 0) + 1;
-               }
-             });
              await updateDoc(doc(db, 'conversations', selectedChatId), {
                updatedAt: Timestamp.now(),
                unreadCount: newUnreadCount,
-               lastMessage: {
-                 content: lastMessageContent,
-                 senderId: user.email.toLowerCase(),
-                 timestamp: Timestamp.now(),
-                 isEncrypted: chat?.type !== 'ai'
-               }
+               lastMessage: previewLastMessage
              });
              console.log("sendMessage: Chat updated");
           };
