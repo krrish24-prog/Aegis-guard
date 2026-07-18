@@ -336,7 +336,7 @@ const SplashScreen = () => (
       >
         <div className="absolute inset-0 bg-emerald-500 blur-[80px] opacity-40 rounded-full" />
         <div className="w-32 h-32 rounded-[2rem] overflow-hidden relative z-10 border border-emerald-400/30 shadow-2xl shadow-emerald-500/30">
-          <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+          <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-contain" />
         </div>
       </motion.div>
       <motion.div 
@@ -371,7 +371,7 @@ const LoadingScreen = () => (
       className="flex flex-col items-center"
     >
       <div className="w-16 h-16 rounded-2xl overflow-hidden mb-4 shadow-lg shadow-emerald-500/20 border border-emerald-400/30">
-        <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+        <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-contain" />
       </div>
       <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Aegis Guard</h1>
       <p className="text-zinc-500 mt-2">Initializing secure environment...</p>
@@ -1127,6 +1127,18 @@ export default function App() {
         ...contact,
         createdAt: serverTimestamp()
       });
+      const targetId = contact.uid && !contact.uid.startsWith('temp-') ? contact.uid : null;
+      if (targetId && profile) {
+        await setDoc(doc(collection(db, 'users', targetId, 'contacts')), {
+          uid: user.uid,
+          displayName: profile.displayName || user.displayName || user.email || 'Aegis User',
+          email: user.email?.toLowerCase() || '',
+          phoneNumber: profile.phoneNumber || '',
+          photoURL: profile.photoURL || user.photoURL || '',
+          publicKey: profile.publicKey || '',
+          createdAt: serverTimestamp()
+        }, { merge: true });
+      }
       return contactRef.id;
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `users/${userIdentifier}/contacts`);
@@ -4063,7 +4075,7 @@ export default function App() {
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-emerald-500/20 border border-emerald-400/30">
-                    <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+                    <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-contain" />
                   </div>
                   <div>
                     <h1 className="text-lg font-bold text-zinc-900 leading-tight">{t.aegisGuard || 'Aegis Guard'}</h1>
@@ -5140,7 +5152,7 @@ export default function App() {
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
               <div className="w-24 h-24 rounded-3xl overflow-hidden mb-6 shadow-lg shadow-emerald-500/20 border border-emerald-400/20">
-                <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-cover" />
+                <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-contain" />
               </div>
               <h2 className="text-2xl font-bold text-zinc-900 mb-2">{t.secureCommunication || 'Secure Communication'}</h2>
               <p className="text-zinc-500 max-w-sm">
