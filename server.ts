@@ -85,7 +85,12 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const HOST = process.env.HOST || "0.0.0.0";
 
-  app.use(helmet({ contentSecurityPolicy: false }));
+  app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+  }));
   app.use(cors({
     origin: process.env.CORS_ORIGIN || true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
