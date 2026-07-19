@@ -3,6 +3,9 @@ import * as crypto from "crypto";
 import fs from "fs";
 import express from "express";
 import path from "path";
+import helmet from "helmet";
+import cors from "cors";
+import rateLimit from "express-rate-limit";
 import { requireFirebaseAuth, type AuthenticatedRequest } from "./server/authMiddleware";
 
 const envBasePath = path.resolve(process.cwd(), ".env");
@@ -78,8 +81,47 @@ const FAIL_CLOSED_GROUP = JSON.stringify({
 
 async function startServer() {
   const app = express();
+  app.set("trust proxy", 1);
   const PORT = Number(process.env.PORT) || 3000;
   const HOST = process.env.HOST || "0.0.0.0";
+
+  app.use(helmet());
+  app.use(cors({
+    origin: process.env.CORS_ORIGIN || true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }));
+
+  // General API rate limit: 100 requests per minute per IP
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many requests, please try again later." },
+  });
+
+  // Stricter limit for AI-heavy endpoints: 20 requests per minute per IP
+  const aiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many AI requests, please slow down." },
+  });
+
+  app.use("/api/storage/status", apiLimiter);
+  app.use("/api/storage/upload", apiLimiter);
+  app.use("/api/storage/write-test", apiLimiter);
+  app.use("/api/storage/files/:fileId/download", apiLimiter);
+  app.use("/api/meet/create", apiLimiter);
+  app.use("/api/security-assistant", aiLimiter);
+  app.use("/api/malware-score", aiLimiter);
+  app.use("/api/chat", aiLimiter);
+  app.use("/api/analyze", aiLimiter);
+  app.use("/api/analyze-call", aiLimiter);
+  app.use("/api/analyze-group", aiLimiter);
+  app.use("/api/threat-explain", aiLimiter);
 
   app.use(express.json({ limit: "70mb" }));
   app.use("/api", (req, res, next) => {
