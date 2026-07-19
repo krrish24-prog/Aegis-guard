@@ -1123,14 +1123,20 @@ export default function App() {
     const userIdentifier = user?.uid;
     if (!userIdentifier) return;
     try {
-      const contactRef = doc(collection(db, 'users', userIdentifier, 'contacts'));
+      const targetId = contact.uid && !contact.uid.startsWith('temp-') ? contact.uid : null;
+
+      // Save contact with UID as document ID (not random) so reciprocal sync works
+      const contactRef = targetId
+        ? doc(db, 'users', userIdentifier, 'contacts', targetId)
+        : doc(collection(db, 'users', userIdentifier, 'contacts'));
+
       await setDoc(contactRef, {
         ...contact,
         createdAt: serverTimestamp()
-      });
-      const targetId = contact.uid && !contact.uid.startsWith('temp-') ? contact.uid : null;
+      }, { merge: true });
+
       if (targetId && profile) {
-        await setDoc(doc(collection(db, 'users', targetId, 'contacts')), {
+        await setDoc(doc(db, 'users', targetId, 'contacts', userIdentifier), {
           uid: user.uid,
           displayName: profile.displayName || user.displayName || user.email || 'Aegis User',
           email: user.email?.toLowerCase() || '',
