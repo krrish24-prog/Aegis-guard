@@ -1123,28 +1123,42 @@ export default function App() {
     const userIdentifier = user?.uid;
     if (!userIdentifier) return;
     try {
-      const targetId = contact.uid && !contact.uid.startsWith('temp-') ? contact.uid : null;
+      // Use uid from contact data, or id, or doc ID fallback
+      const targetId = (contact.uid || contact.id || '').startsWith('temp-')
+        ? null
+        : (contact.uid || contact.id || null);
 
       // Save contact with UID as document ID (not random) so reciprocal sync works
       const contactRef = targetId
         ? doc(db, 'users', userIdentifier, 'contacts', targetId)
         : doc(collection(db, 'users', userIdentifier, 'contacts'));
 
-      await setDoc(contactRef, {
+      // Ensure uid field is always set in the contact doc
+      const contactData = {
         ...contact,
+        uid: contact.uid || contact.id || targetId || userIdentifier,
         createdAt: serverTimestamp()
-      }, { merge: true });
+      };
 
+      await setDoc(contactRef, contactData, { merge: true });
+
+      // Write reciprocal contact so the other user sees us automatically
       if (targetId && profile) {
-        await setDoc(doc(db, 'users', targetId, 'contacts', userIdentifier), {
+        const reciprocalData = {
           uid: user.uid,
           displayName: profile.displayName || user.displayName || user.email || 'Aegis User',
           email: user.email?.toLowerCase() || '',
           phoneNumber: profile.phoneNumber || '',
           photoURL: profile.photoURL || user.photoURL || '',
           publicKey: profile.publicKey || '',
-          createdAt: serverTimestamp()
-        }, { merge: true });
+          createdAt: serverTimestamp(),
+          source: 'reciprocal_auto',
+        };
+        await setDoc(
+          doc(db, 'users', targetId, 'contacts', userIdentifier),
+          reciprocalData,
+          { merge: true }
+        );
       }
       return contactRef.id;
     } catch (err) {
@@ -3600,6 +3614,14 @@ export default function App() {
       const isEmail = queryStr.includes('@');
       let results: UserProfile[] = [];
       
+      const buildResults = (snapshot: any) =>
+        snapshot.docs
+          .map((doc: any) => ({
+            ...doc.data(),
+            uid: doc.data().uid || doc.id,  // fallback to doc ID if uid field missing
+          } as UserProfile))
+          .filter((u: UserProfile) => u.email?.toLowerCase() !== user?.email?.toLowerCase() && u.uid !== user?.uid);
+
       if (isEmail) {
         const qEmail = query(
           collection(db, 'users_public'),
@@ -3607,8 +3629,7 @@ export default function App() {
           limit(1)
         );
         const snapshotEmail = await getDocs(qEmail);
-        results = snapshotEmail.docs.map(doc => doc.data() as UserProfile)
-          .filter(u => u.email?.toLowerCase() !== user?.email?.toLowerCase() && u.uid !== user?.uid);
+        results = buildResults(snapshotEmail);
       } else {
         const q = query(
           collection(db, 'users_public'),
@@ -3617,9 +3638,7 @@ export default function App() {
           limit(20)
         );
         const snapshot = await getDocs(q);
-        results = snapshot.docs
-          .map(doc => doc.data() as UserProfile)
-          .filter(u => u.email?.toLowerCase() !== user?.email?.toLowerCase() && u.uid !== user?.uid);
+        results = buildResults(snapshot);
       }
         
       setSearchResults(results);
