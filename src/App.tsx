@@ -1706,11 +1706,31 @@ export default function App() {
               if (!u.displayName) setShowCompleteProfile(true);
             }
           } catch (error: any) {
-            console.error('Profile fetch error', error);
-            setFirestoreError('Could not load profile. Please sign in again.');
-            setUser(null);
-            setProfile(null);
-            await signOut(auth);
+            console.error('Profile fetch error — attempting recovery', error);
+            // Don't sign the user out on profile load failure.
+            // Instead, attempt to create/recover the profile from Firebase Auth data.
+            try {
+              const keys = await EncryptionService.getOrCreateKeyPair(u.uid);
+              const email = u.email?.toLowerCase() || '';
+              const newPrivateProfile = { uid: u.uid, email };
+              const newPublicProfile = {
+                uid: u.uid, email,
+                displayName: u.displayName || 'User',
+                photoURL: u.photoURL || '',
+                online: true, publicKey: keys.publicKey,
+              };
+              await Promise.all([
+                setDoc(doc(db, 'users', u.uid), newPrivateProfile, { merge: true }),
+                setDoc(doc(db, 'users_public', u.uid), newPublicProfile, { merge: true }),
+              ]);
+              setProfile({ ...newPublicProfile, ...newPrivateProfile } as UserProfile);
+              setFirestoreError(null);
+              showToast('Profile recovered — welcome back!');
+            } catch (recoveryError) {
+              console.error('Profile recovery failed', recoveryError);
+              setFirestoreError('Could not load profile. Try refreshing the page.');
+              // Still don't sign out — show in-app error instead
+            }
           }
         } else {
           setUser(null);
