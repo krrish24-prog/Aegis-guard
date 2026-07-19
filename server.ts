@@ -453,6 +453,7 @@ async function startServer() {
 
     if (!response.ok) {
       const errText = await response.text();
+      console.error(`NVIDIA API error ${response.status}:`, errText);
       const err = new Error(`NVIDIA request failed: ${response.status} ${errText}`);
       (err as any).status = response.status;
       throw err;
@@ -590,9 +591,13 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
       console.error("AI Chat Error:", error);
       if (!res.headersSent) {
           if (error?.status === 429) {
-              res.status(429).json({ error: "Rate limit exceeded. Please wait a few seconds before sending another message." });
+              res.status(429).json({ 
+                error: "AI service quota temporarily exhausted. Please wait a moment and try again.",
+                retryAfter: 60,
+                isQuotaError: true
+              });
           } else {
-              res.status(500).json({ error: error.message });
+              res.status(500).json({ error: error.message || 'AI service temporarily unavailable' });
           }
       } else {
           res.write(`data: ${JSON.stringify({ error: error.message || 'Stream error' })}\n\n`);

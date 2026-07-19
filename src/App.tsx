@@ -2639,7 +2639,8 @@ export default function App() {
                 setStreamingAIMessage({ chatId: aiChatId, text: aiText });
               } else if (data.error) {
                 streamError = data.error;
-                showToast("AI Error: " + data.error);
+                const isQuota = /quota|429|rate.?limit/i.test(data.error);
+                showToast(isQuota ? "AI service busy — using local fallback" : "AI Error: " + data.error);
                 break;
               }
             } catch (e) {}
@@ -2650,7 +2651,8 @@ export default function App() {
       setStreamingAIMessage(null);
       
       if (!aiText && streamError) {
-        await saveAIResponse(`AI backend error: ${streamError}. Check Render environment variable NVIDIA_MODEL and NVIDIA_API_KEY.`);
+        const isQuota = /quota|429|rate.?limit/i.test(streamError);
+        await saveAIResponse(isQuota ? localFallbackResponse() : `AI backend error: ${streamError}.`);
         return;
       }
       if (!aiText) return;
@@ -2663,7 +2665,7 @@ export default function App() {
           id: msgRef.id,
           chatId: aiChatId,
           senderId: 'aegis-guard@aegis.ai',
-          content: 'AI connection is temporarily unavailable. Please check backend AI environment settings, then try again.',
+          content: 'AI assistant is temporarily busy. I can still help with basic security guidance — try sending your question again in a moment.',
           encryptedSessionKeys: {},
           iv: "",
           timestamp: serverTimestamp(),
