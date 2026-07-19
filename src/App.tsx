@@ -123,6 +123,7 @@ import SecurityScoreCircle from './components/SecurityScoreCircle';
 import LoginScreen from './components/auth/LoginScreen';
 import { SecurityService, SecurityAnalysis, GroupVerification } from './services/securityService';
 import { AuditLogService } from './services/auditLogService';
+import { syncGoogleContacts, syncReciprocalContacts } from './services/googleContactService';
 import { DeviceService } from './services/deviceService';
 import { SessionService } from './services/sessionService';
 import { KeyManagementService } from './services/keyManagementService';
@@ -1011,6 +1012,8 @@ export default function App() {
   const [revealedMessages, setRevealedMessages] = useState<string[]>([]);
   const [showChatSecurity, setShowChatSecurity] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [googleContactSyncDone, setGoogleContactSyncDone] = useState(false);
   const [isProfileGlow, setIsProfileGlow] = useState(false);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
@@ -1745,6 +1748,35 @@ export default function App() {
     return unsubscribe;
   }, [user]);
 
+  // WhatsApp-like contact auto-discovery on login
+  useEffect(() => {
+    if (!user || !profile) return;
+    if (googleContactSyncDone) return;
+
+    const doSync = async () => {
+      try {
+        if (googleAccessToken) {
+          // Google sign-in user — sync Google Contacts via People API
+          const result = await syncGoogleContacts(user.uid, googleAccessToken);
+          if (result.synced > 0) {
+            console.log(`Auto-synced ${result.synced} contacts from Google`);
+          }
+        } else {
+          // Email/password user — reciprocal contact discovery
+          const count = await syncReciprocalContacts(user.uid, user.email || '');
+          if (count > 0) {
+            console.log(`Auto-discovered ${count} reciprocal contacts`);
+          }
+        }
+      } catch (e) {
+        console.warn('Contact sync failed (non-blocking):', e);
+      }
+      setGoogleContactSyncDone(true);
+    };
+
+    doSync();
+  }, [user, profile, googleAccessToken, googleContactSyncDone]);
+
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
@@ -1765,8 +1797,15 @@ export default function App() {
     setLoginError(null);
     try {
       const provider = new GoogleAuthProvider();
+      provider.addScope('https://www.googleapis.com/auth/contacts.readonly');
       provider.setCustomParameters({ prompt: 'select_account' });
-      await signInWithPopup(auth, provider);
+      const result = await signInWithPopup(auth, provider);
+      // Capture the Google access token for People API calls
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        setGoogleAccessToken(credential.accessToken);
+        setGoogleContactSyncDone(false); // trigger re-sync on next login
+      }
     } catch (error: any) {
       console.error("Google login failed", error);
       if (error.code === 'auth/popup-closed-by-user') {
