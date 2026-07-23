@@ -4126,12 +4126,18 @@ export default function App() {
 
   return (
     <div className={cn(
-      "flex h-screen overflow-hidden font-sans flex-col transition-colors duration-500",
-      `theme-${theme}`,
-      theme === 'dark' ? "bg-zinc-950 text-white" : 
-      theme === 'glow' ? "bg-emerald-950 text-emerald-50" : 
-      "bg-zinc-50 text-zinc-900"
+      "h-screen w-screen overflow-hidden",
+      theme === 'dark' ? "bg-zinc-950" : 
+      theme === 'glow' ? "bg-emerald-950" : 
+      "bg-zinc-100"
     )}>
+      <div className={cn(
+        "mx-auto h-full flex font-sans flex-col transition-colors duration-500 max-w-[1440px] shadow-2xl",
+        `theme-${theme}`,
+        theme === 'dark' ? "bg-zinc-950 text-white border-x border-zinc-800" : 
+        theme === 'glow' ? "bg-emerald-950 text-emerald-50 border-x border-emerald-800/30" : 
+        "bg-zinc-50 text-zinc-900 border-x border-zinc-200"
+      )}>
       {toast.show && (
         <div className="fixed top-6 right-6 z-[999] bg-emerald-500 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
             <CheckCheck className="w-5 h-5" />
@@ -4299,7 +4305,7 @@ export default function App() {
                       key={`${chat.id}-${i}`}
                       onClick={() => setSelectedChatId(chat.id)}
                       className={cn(
-                        "w-full p-4 flex items-center gap-3 transition-all text-left border-l-4",
+                        "w-full p-4 flex items-center gap-3 transition-all text-left border-l-4 group",
                         selectedChatId === chat.id 
                           ? (theme === 'glow' ? "bg-emerald-500/10 border-emerald-500 glow-emerald-side" : "bg-emerald-50/50 border-emerald-500") 
                           : "border-transparent hover:bg-zinc-50"
@@ -4376,6 +4382,19 @@ export default function App() {
                           )}
                         </div>
                       </div>
+                      {chat.type === 'direct' && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            deleteDirectContactAndChat(chat);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-red-50 rounded-lg shrink-0"
+                          title="Delete contact & chat"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </span>
+                      )}
                     </button>
                   ))
                 )}
@@ -8040,6 +8059,7 @@ export default function App() {
           <video id="local-video" autoPlay muted playsInline />
         </div>
       )}
+      </div>
     </div>
   );
 }
