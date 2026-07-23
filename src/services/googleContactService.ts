@@ -31,9 +31,7 @@ export async function syncReciprocalContacts(
   uid: string,
   email: string
 ): Promise<number> {
-  if (!email) return 0;
-
-  // Get all registered users
+  const emailKey = (email || '').toLowerCase();
   const publicSnap = await getDocs(collection(db, "users_public"));
   let syncedCount = 0;
 
@@ -41,16 +39,16 @@ export async function syncReciprocalContacts(
     const otherUid = d.id;
     if (otherUid === uid) continue;
 
-    // Check if this other user has us in their contacts
-    const theirContactRef = doc(db, "users", otherUid, "contacts", uid);
-    const theirContactSnap = await getDoc(theirContactRef);
+    const otherData = d.data();
+    const theirUidContact = await getDoc(doc(db, "users", otherUid, "contacts", uid));
+    const theirEmailContact = emailKey
+      ? await getDoc(doc(db, "users", otherUid, "contacts", emailKey))
+      : null;
 
-    if (theirContactSnap.exists()) {
-      // They have us — we should have them too (if not already)
+    if (theirUidContact.exists() || theirEmailContact?.exists()) {
       const ourContactRef = doc(db, "users", uid, "contacts", otherUid);
       const ourContactSnap = await getDoc(ourContactRef);
       if (!ourContactSnap.exists()) {
-        const otherData = d.data();
         await setDoc(ourContactRef, {
           uid: otherUid,
           displayName: otherData.displayName || "Unknown",
@@ -66,8 +64,5 @@ export async function syncReciprocalContacts(
     }
   }
 
-  if (syncedCount > 0) {
-    console.log(`[ContactSync] Synced ${syncedCount} reciprocal contacts`);
-  }
   return syncedCount;
 }

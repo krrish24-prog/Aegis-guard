@@ -22,7 +22,7 @@ export class ContactStatusService {
       await updateDoc(userRef, {
         online,
         lastSeen: online ? null : serverTimestamp(),
-        currentStatus: statusMessage || (online ? 'Available' : 'Away'),
+        currentStatus: online ? 'Online' : (statusMessage || 'Away'),
         statusUpdatedAt: serverTimestamp()
       });
     } catch (error) {

@@ -1777,7 +1777,7 @@ export default function App() {
     const q = query(collection(db, 'users_public'), limit(50));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const usersList = snapshot.docs
-        .map(doc => doc.data() as UserProfile)
+        .map(doc => ({ uid: doc.id, ...doc.data() } as UserProfile))
         .filter(u => u.email?.toLowerCase() !== user.email?.toLowerCase());
       setAllUsers(usersList);
     }, (error) => {
@@ -4401,7 +4401,7 @@ export default function App() {
                             return (
                               <>
                                 <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                                <span className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">{contactStatus.currentStatus || 'Online'}</span>
+                                <span className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Online</span>
                                 <span className="text-zinc-300 mx-1">•</span>
                                 <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
                                 <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
