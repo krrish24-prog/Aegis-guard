@@ -15,8 +15,6 @@ import {
   signOut, 
   onAuthStateChanged, 
   User as FirebaseUser,
-  GoogleAuthProvider,
-  signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail
@@ -1022,6 +1020,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
   const [allContacts, setAllContacts] = useState<UserProfile[]>([]);
   const [syncedContacts, setSyncedContacts] = useState<UserProfile[]>([]);
+  const [chatResetTimestamps, setChatResetTimestamps] = useState<Record<string, Timestamp>>({});
 
   useEffect(() => {
     if (!user) return;
@@ -1818,31 +1817,6 @@ export default function App() {
     await auth.signOut();
   };
 
-  const handleGoogleLogin = async () => {
-    console.log("login debug log: Initiating Google login");
-    setIsLoggingIn(true);
-    setLoginError(null);
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: 'select_account' });
-      await signInWithPopup(auth, provider);
-    } catch (error: any) {
-      console.error("Google login failed", error);
-      if (error.code === 'auth/popup-closed-by-user') {
-        // User closed the popup, don't show a scary error
-        setLoginError(null);
-      } else if (error.code === 'auth/account-exists-with-different-credential') {
-        setLoginError("An account already exists with this email address. Please sign in using your password.");
-      } else if (error.message) {
-        setLoginError(`Google sign-in failed: ${error.message}`);
-      } else {
-        setLoginError("Google sign-in failed. Please try again.");
-      }
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
   const handleEmailAuth = async (email: string, pass: string, isSignUp: boolean) => {
     console.log("login debug log: Initiating email auth. isSignUp:", isSignUp);
     setIsLoggingIn(true);
@@ -2399,6 +2373,24 @@ export default function App() {
     });
   }, [chats, allUsers, user]);
 
+  // Track resetAt timestamps on the selected chat (for fresh-start after re-add)
+  useEffect(() => {
+    if (!selectedChatId || !user) return;
+    
+    const chatRef = doc(db, 'conversations', selectedChatId);
+    const unsubscribe = onSnapshot(chatRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const resetField = `resetAt_${user.uid}`;
+        if (data[resetField]) {
+          setChatResetTimestamps(prev => ({ ...prev, [selectedChatId]: data[resetField] }));
+        }
+      }
+    });
+    
+    return unsubscribe;
+  }, [selectedChatId, user]);
+
   useEffect(() => {
     if (!selectedChatId || !user) return;
 
@@ -2411,7 +2403,17 @@ export default function App() {
     const unsubscribe = onSnapshot(q, async (snapshot) => {
       try {
         console.log("message receiving debug log: snapshot updated with", snapshot.docs.length, "messages");
-        const msgList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+        let msgList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+        
+        // Filter out messages before the resetAt timestamp (fresh start after contact re-add)
+        const resetAt = chatResetTimestamps[selectedChatId];
+        if (resetAt) {
+          const resetMs = resetAt.toMillis();
+          msgList = msgList.filter(m => {
+            const msgMs = m.timestamp?.toMillis() || 0;
+            return msgMs >= resetMs;
+          });
+        }
         
         let needsUpdate = false;
         
@@ -2488,7 +2490,7 @@ export default function App() {
     });
 
     return unsubscribe;
-  }, [selectedChatId, user, messageLimit]);
+  }, [selectedChatId, user, messageLimit, chatResetTimestamps]);
 
   useEffect(() => {
     if (messagesContainerRef.current) {
@@ -3430,6 +3432,7 @@ export default function App() {
       await updateDoc(doc(db, 'conversations', chat.id), {
         deletedFor: arrayUnion(user.uid),
         [`unreadCount.${user.uid}`]: 0,
+        [`resetAt_${user.uid}`]: Timestamp.now(),
       });
 
       setSyncedContacts(prev => prev.filter(c => (c as any).id !== (contact as any)?.id));
@@ -3488,6 +3491,27 @@ export default function App() {
     }
 
     try {
+      // 2. Check if this chat was previously deleted (exists in Firestore but filtered from UI)
+      const chatDoc = await getDoc(doc(db, 'conversations', chatId));
+      if (chatDoc.exists()) {
+        const chatData = chatDoc.data();
+        if (chatData.deletedFor?.includes(user.uid)) {
+          // Previously deleted — set a fresh resetAt timestamp so old messages are filtered out
+          console.log("conversation creation debug log: Re-adding deleted chat — setting fresh resetAt", chatId);
+          // Remove user from deletedFor and set reset timestamp for fresh start
+          await updateDoc(doc(db, 'conversations', chatId), {
+            deletedFor: arrayRemove(user.uid),
+            [`resetAt_${user.uid}`]: Timestamp.now(),
+            updatedAt: Timestamp.now(),
+          });
+          // Update chatResets state so the messages listener filters old messages
+          setChatResetTimestamps(prev => ({ ...prev, [chatId]: Timestamp.now() }));
+          setSelectedChatId(chatId);
+          setShowNewChat(false);
+          return;
+        }
+      }
+
       console.log("conversation creation debug log: Creating new chat with", targetUid);
       const chatRef = doc(db, 'conversations', chatId);
       const newChatData = {
@@ -3738,7 +3762,6 @@ export default function App() {
   
   if (!user || !profile) return (
     <LoginScreen 
-      onGoogleLogin={handleGoogleLogin}
       onEmailAuth={handleEmailAuth}
       onForgotPassword={handleForgotPassword}
       isLoggingIn={isLoggingIn} 
@@ -4142,7 +4165,11 @@ export default function App() {
             {activeSection === 'chats' ? (
           <>
             {/* Sidebar */}
-            <div className="w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0">
+            <div className={cn(
+              "w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0",
+              "max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30",
+              selectedChatId && "max-md:hidden"
+            )}>
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl overflow-hidden shadow-lg shadow-emerald-500/20 border border-emerald-400/30">
@@ -4356,7 +4383,7 @@ export default function App() {
             </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-white relative">
+      <div className="flex-1 flex flex-col bg-white relative max-md:z-20">
         <AnimatePresence>
           {selectedChat ? (
             <motion.div 
@@ -5221,8 +5248,8 @@ export default function App() {
               </div>
             </motion.div>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center p-12 text-center">
-              <div className="w-24 h-24 rounded-3xl overflow-hidden mb-6 shadow-lg shadow-emerald-500/20 border border-emerald-400/20">
+            <div className="flex-1 flex flex-col items-center justify-center p-12 max-md:p-6 text-center max-md:hidden">
+              <div className="w-24 h-24 max-md:w-16 max-md:h-16 rounded-3xl overflow-hidden mb-6 shadow-lg shadow-emerald-500/20 border border-emerald-400/20">
                 <img src="/app-logo.png" alt="Aegis Guard" className="w-full h-full object-contain" />
               </div>
               <h2 className="text-2xl font-bold text-zinc-900 mb-2">{t.secureCommunication || 'Secure Communication'}</h2>
@@ -5249,7 +5276,7 @@ export default function App() {
     </>
   ) : activeSection === 'meetings' ? (
     <div className="flex-1 flex flex-col bg-white overflow-y-auto">
-      <div className="p-12 max-w-5xl mx-auto w-full space-y-12">
+      <div className="p-12 max-md:p-4 max-w-5xl mx-auto w-full space-y-12">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-bold text-zinc-900">{t.meetings}</h2>
@@ -5346,7 +5373,7 @@ export default function App() {
     </div>
   ) : activeSection === 'contacts' ? (
     <div className="flex-1 flex flex-col bg-white overflow-y-auto">
-      <div className="p-12 max-w-5xl mx-auto w-full space-y-12">
+      <div className="p-12 max-md:p-4 max-w-5xl mx-auto w-full space-y-12">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-zinc-900">{t.contacts}</h2>
           <div className="flex gap-3">
@@ -5381,13 +5408,13 @@ export default function App() {
               >
                 <div className="w-12 h-12 rounded-full overflow-hidden shrink-0 bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold text-lg">
                   {contact.photoURL ? (
-                    <img src={contact.photoURL} alt={contact.displayName} className="w-full h-full object-cover" />
+                    <img src={contact.photoURL} alt={contact.displayName || 'Contact'} className="w-full h-full object-cover" />
                   ) : (
-                    contact.displayName?.charAt(0).toUpperCase() || '?'
+                    (contact.displayName || contact.email || '?').charAt(0).toUpperCase()
                   )}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-bold text-zinc-900 truncate">{contact.displayName}</h3>
+                  <h3 className="font-bold text-zinc-900 truncate">{contact.displayName || contact.email || 'Unknown Contact'}</h3>
                   {(contact.phoneNumber || contact.email) && (
                     <p className="text-sm text-zinc-500 truncate">{contact.phoneNumber || contact.email}</p>
                   )}
@@ -5435,7 +5462,7 @@ export default function App() {
       </div>
     </div>
   ) : activeSection === 'news' ? (
-    <div className={cn("flex-1 flex flex-col p-8 overflow-y-auto transition-colors duration-500", theme === 'glow' ? 'bg-emerald-950/40' : 'bg-white')}>
+    <div className={cn("flex-1 flex flex-col p-8 max-md:p-4 overflow-y-auto transition-colors duration-500", theme === 'glow' ? 'bg-emerald-950/40' : 'bg-white')}>
       <div className="max-w-4xl mx-auto w-full space-y-8">
         <h2 className="text-2xl font-bold text-zinc-900">Cyber Security News</h2>
         <p className="text-zinc-500 text-sm">Stay updated with the latest threats, vulnerabilities, and digital defense strategies.</p>
@@ -5464,7 +5491,7 @@ export default function App() {
       </div>
     </div>
   ) : activeSection === 'status' ? (
-    <div className={cn("flex-1 flex flex-col p-8 overflow-y-auto transition-colors duration-500", theme === 'glow' ? 'bg-emerald-950/40' : 'bg-white')}>
+    <div className={cn("flex-1 flex flex-col p-8 max-md:p-4 overflow-y-auto transition-colors duration-500", theme === 'glow' ? 'bg-emerald-950/40' : 'bg-white')}>
       <AnimatePresence>
         {viewingStatus && (
           <motion.div 
@@ -5601,7 +5628,7 @@ export default function App() {
             <div className="flex h-full">
               {/* Settings Sidebar */}
               <div className={cn(
-                "w-64 border-r flex flex-col transition-all",
+                "w-64 max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 border-r flex flex-col transition-all",
                 theme === 'glow' ? "bg-emerald-950/40 border-emerald-500/20" : "bg-zinc-50/50 border-zinc-100"
               )}>
                 <div className={cn(

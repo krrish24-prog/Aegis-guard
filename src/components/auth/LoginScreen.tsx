@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Shield, ShieldCheck, Lock, Mail, Eye, EyeOff, Globe, UserPlus,
+  Shield, ShieldCheck, Lock, Mail, Eye, EyeOff, UserPlus,
   AlertTriangle, ChevronLeft, ChevronRight, X, KeyRound,
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
@@ -12,7 +12,6 @@ const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
 type Step = 'email' | 'password';
 
 export interface LoginScreenProps {
-  onGoogleLogin: () => void;
   onEmailAuth: (email: string, pass: string, isSignUp: boolean) => void;
   onForgotPassword: (email: string) => Promise<{ success: boolean; message: string }>;
   isLoggingIn: boolean;
@@ -170,7 +169,6 @@ const BrandPanel = () => (
 );
 
 export default function LoginScreen({
-  onGoogleLogin,
   onEmailAuth,
   onForgotPassword,
   isLoggingIn,
@@ -307,24 +305,6 @@ export default function LoginScreen({
                     </button>
                   </form>
 
-                  <div className="relative">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-zinc-800" />
-                    </div>
-                    <div className="relative flex justify-center text-[10px] font-bold uppercase tracking-widest">
-                      <span className="bg-zinc-900/50 px-4 text-zinc-500">Or</span>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={onGoogleLogin}
-                    disabled={isLoggingIn}
-                    className="w-full py-4 bg-zinc-950 border border-zinc-800 text-white rounded-2xl font-bold hover:bg-zinc-800 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
-                  >
-                    <Globe className="w-5 h-5 text-emerald-500" />
-                    Continue with Google
-                  </button>
                 </motion.div>
               ) : (
                 <motion.div
