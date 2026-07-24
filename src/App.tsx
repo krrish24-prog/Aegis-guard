@@ -4132,11 +4132,11 @@ export default function App() {
       "bg-zinc-100"
     )}>
       <div className={cn(
-        "mx-auto h-full flex font-sans flex-col transition-colors duration-500 max-w-[1440px] shadow-2xl",
+        "w-full h-full flex font-sans flex-col transition-colors duration-500",
         `theme-${theme}`,
-        theme === 'dark' ? "bg-zinc-950 text-white border-x border-zinc-800" : 
-        theme === 'glow' ? "bg-emerald-950 text-emerald-50 border-x border-emerald-800/30" : 
-        "bg-zinc-50 text-zinc-900 border-x border-zinc-200"
+        theme === 'dark' ? "bg-zinc-950 text-white" : 
+        theme === 'glow' ? "bg-emerald-950 text-emerald-50" : 
+        "bg-zinc-50 text-zinc-900"
       )}>
       {toast.show && (
         <div className="fixed top-6 right-6 z-[999] bg-emerald-500 text-white px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
