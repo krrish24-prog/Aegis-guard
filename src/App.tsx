@@ -4006,7 +4006,7 @@ export default function App() {
   );
   const BottomNav = () => (
     <div className={cn(
-      "h-20 border-t flex items-center justify-around px-6 backdrop-blur-xl z-50",
+      "h-16 md:h-20 border-t flex items-center justify-around px-2 md:px-4 backdrop-blur-xl z-50",
       theme === 'dark' ? "bg-zinc-950/80 border-zinc-800" : 
       theme === 'glow' ? "bg-emerald-950/80 border-emerald-800/50" : 
       "bg-white/80 border-zinc-200"
@@ -4172,7 +4172,7 @@ export default function App() {
           <>
             {/* Sidebar */}
             <div className={cn(
-              "w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0",
+              "w-80 lg:w-72 xl:w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0",
               "max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30",
               selectedChatId && "max-md:hidden"
             )}>
@@ -4593,7 +4593,7 @@ export default function App() {
               {/* Messages Area */}
               <div 
                 ref={messagesContainerRef}
-                className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col"
+                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 md:space-y-6 flex flex-col"
                 onScroll={(e) => {
                   const target = e.target as HTMLDivElement;
                   if (target.scrollTop === 0) {
@@ -5252,7 +5252,7 @@ export default function App() {
                     type="submit"
                     disabled={(!newMessage.trim() && !selectedImage && !selectedFile) || isSending}
                     className={cn(
-                      "w-12 h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm",
+                      "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm",
                       theme === 'glow' ? "bg-emerald-500 text-white hover:bg-emerald-600 shadow-emerald-500/20" :
                       "bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
                     )}
