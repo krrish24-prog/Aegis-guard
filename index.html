@@ -2,9 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Aegis Guard</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/app-logo.png" />
+    <link rel="apple-touch-icon" href="/app-logo.png" />
     <link rel="preload" as="image" href="/app-logo.png" />
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Aegis Guard" />
     <meta name="application-name" content="Aegis Guard" />
     <meta name="description" content="Aegis Guard secure messaging with real-time AI threat monitoring." />
     <meta property="og:site_name" content="Aegis Guard" />
@@ -36,20 +43,6 @@
         <p><a href="/privacy_policy.html">Privacy Policy</a></p>
       </main>
     </noscript>
-    <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistrations()
-          .then(function (registrations) {
-            registrations.forEach(function (registration) { registration.unregister(); });
-          })
-          .catch(function () {});
-      }
-      if ('caches' in window) {
-        caches.keys()
-          .then(function (keys) { keys.forEach(function (key) { caches.delete(key); }); })
-          .catch(function () {});
-      }
-    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

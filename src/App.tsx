@@ -1279,9 +1279,29 @@ export default function App() {
   const [uploadProgressRecord, setUploadProgressRecord] = useState<Record<string, number>>({});
   const [theme, setTheme] = useState<'light' | 'dark' | 'glow'>('dark');
   const [toast, setToast] = useState<{message: string, show: boolean}>({message: '', show: false});
+  const [installPrompt, setInstallPrompt] = useState<any>(null);
   const showToast = (message: string) => {
     setToast({message, show: true});
     setTimeout(() => setToast({message: '', show: false}), 3000);
+  };
+
+  useEffect(() => {
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    window.addEventListener('beforeinstallprompt', handleInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+  }, []);
+
+  const installWebApp = async () => {
+    if (!installPrompt) {
+      showToast('Use browser menu to install Aegis Guard');
+      return;
+    }
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    setInstallPrompt(null);
   };
 
   useEffect(() => {
@@ -4150,7 +4170,7 @@ export default function App() {
 
   return (
     <div className={cn(
-      "h-screen w-screen overflow-hidden",
+      "h-[100dvh] w-screen overflow-hidden",
       theme === 'dark' ? "bg-zinc-950" : 
       theme === 'glow' ? "bg-emerald-950" : 
       "bg-zinc-100"
@@ -5699,7 +5719,7 @@ export default function App() {
             <div className="flex h-full max-md:flex-col max-md:overflow-hidden">
               {/* Settings Sidebar */}
               <div className={cn(
-                "w-64 max-md:w-full max-md:h-auto max-md:max-h-[42vh] max-md:shrink-0 border-r max-md:border-r-0 max-md:border-b flex flex-col transition-all",
+                "w-64 max-md:w-full max-md:h-auto max-md:max-h-[34dvh] max-md:shrink-0 border-r max-md:border-r-0 max-md:border-b flex flex-col transition-all",
                 theme === 'glow' ? "bg-emerald-950/40 border-emerald-500/20" : "bg-zinc-50/50 border-zinc-100"
               )}>
                 <div className={cn(
@@ -5761,7 +5781,7 @@ export default function App() {
                 "flex-1 overflow-y-auto transition-all",
                 theme === 'glow' ? "bg-emerald-950/20" : "bg-white"
               )}>
-                <div className="p-12 max-md:p-5 max-w-2xl mx-auto w-full space-y-12 max-md:space-y-6">
+                <div className="p-12 max-md:p-5 max-md:pb-28 max-w-2xl mx-auto w-full space-y-12 max-md:space-y-6">
                   {activeSettingsTab === 'profile' && renderProfileSettings()}
                   {activeSettingsTab === 'main' && (
                     <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
@@ -5842,6 +5862,28 @@ export default function App() {
                             </div>
                           </div>
                           <button className={cn("text-xs font-bold hover:underline", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")}>{t.check || 'Check'}</button>
+                        </div>
+                      </section>
+
+                      <section className="space-y-4">
+                        <h3 className={cn(
+                          "text-xs font-bold uppercase tracking-widest",
+                          theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
+                        )}>Install App</h3>
+                        <div className={cn(
+                          "p-4 rounded-2xl border flex items-center justify-between gap-4 transition-all",
+                          theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
+                        )}>
+                          <div className="flex items-center gap-3 min-w-0">
+                            <Smartphone className={cn("w-5 h-5 shrink-0", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-zinc-900">Install Aegis Guard</p>
+                              <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>Add it to your home screen with the Aegis Guard logo.</p>
+                            </div>
+                          </div>
+                          <button onClick={installWebApp} className="px-4 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold hover:bg-emerald-600 transition-colors shrink-0">
+                            Install
+                          </button>
                         </div>
                       </section>
                     </div>
