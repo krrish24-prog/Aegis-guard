@@ -1280,23 +1280,42 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark' | 'glow'>('dark');
   const [toast, setToast] = useState<{message: string, show: boolean}>({message: '', show: false});
   const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
   const showToast = (message: string) => {
     setToast({message, show: true});
     setTimeout(() => setToast({message: '', show: false}), 3000);
   };
 
   useEffect(() => {
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone === true;
+    setIsAppInstalled(standalone);
+
     const handleInstallPrompt = (event: Event) => {
       event.preventDefault();
       setInstallPrompt(event);
+      setIsAppInstalled(false);
+    };
+    const handleInstalled = () => {
+      setInstallPrompt(null);
+      setIsAppInstalled(true);
+      showToast('Aegis Guard installed');
     };
     window.addEventListener('beforeinstallprompt', handleInstallPrompt);
-    return () => window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+    window.addEventListener('appinstalled', handleInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleInstallPrompt);
+      window.removeEventListener('appinstalled', handleInstalled);
+    };
   }, []);
 
   const installWebApp = async () => {
+    if (isAppInstalled) {
+      window.open(window.location.origin, 'aegis-guard-app', 'popup,width=430,height=820');
+      return;
+    }
     if (!installPrompt) {
-      showToast('Use browser menu to install Aegis Guard');
+      window.open(window.location.origin, 'aegis-guard-app', 'popup,width=430,height=820');
+      showToast('If Chrome shows Open in app, Aegis Guard is already installed');
       return;
     }
     installPrompt.prompt();
@@ -5878,11 +5897,13 @@ export default function App() {
                             <Smartphone className={cn("w-5 h-5 shrink-0", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
                             <div className="min-w-0">
                               <p className="text-sm font-bold text-zinc-900">Install Aegis Guard</p>
-                              <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>Add it to your home screen with the Aegis Guard logo.</p>
+                              <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>
+                                {isAppInstalled ? 'Aegis Guard is installed with the app logo.' : 'Install on mobile or desktop with the Aegis Guard logo.'}
+                              </p>
                             </div>
                           </div>
                           <button onClick={installWebApp} className="px-4 py-2 bg-emerald-500 text-white rounded-xl text-xs font-bold hover:bg-emerald-600 transition-colors shrink-0">
-                            Install
+                            {isAppInstalled ? 'Open App' : 'Install'}
                           </button>
                         </div>
                       </section>
