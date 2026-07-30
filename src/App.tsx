@@ -4478,7 +4478,7 @@ export default function App() {
             </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col bg-white relative max-md:z-20">
+      <div className="flex-1 min-w-0 max-md:w-full flex flex-col bg-white relative max-md:z-20">
         <AnimatePresence>
           {selectedChat ? (
             <motion.div 
@@ -4488,19 +4488,30 @@ export default function App() {
               className="flex flex-col h-full"
             >
               {/* Chat Header */}
-              <div className="p-4 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
-                <div className="flex items-center gap-3">
+      <div className="p-4 max-md:px-3 max-md:py-3 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
+                <div className="flex items-center gap-2 min-w-0">
+                  <button
+                    onClick={() => {
+                      setSelectedChatId(null);
+                      setMessages([]);
+                      setShowChatMenu(false);
+                    }}
+                    className="hidden max-md:flex w-9 h-9 rounded-xl items-center justify-center text-zinc-600 hover:bg-zinc-100 shrink-0"
+                    title="Back to chats"
+                  >
+                    <ArrowDownLeft className="w-5 h-5 rotate-45" />
+                  </button>
                   <button 
                     onClick={() => setShowParticipants(true)}
-                    className={cn("w-10 h-10 bg-zinc-100 rounded-xl flex items-center justify-center text-zinc-500", selectedChat?.type === 'group' && "hover:bg-zinc-200 transition-colors cursor-pointer")}
+                    className={cn("w-10 h-10 max-md:w-9 max-md:h-9 bg-zinc-100 rounded-xl flex items-center justify-center text-zinc-500 shrink-0", selectedChat?.type === 'group' && "hover:bg-zinc-200 transition-colors cursor-pointer")}
                     disabled={selectedChat?.type !== 'group'}
                   >
                     {selectedChat?.type === 'saved' ? <Bookmark className="w-5 h-5 text-emerald-500" /> : 
                      selectedChat?.type === 'ai' ? <Shield className="w-5 h-5 text-emerald-500" /> : 
                      selectedChat?.type === 'group' ? <Users className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
                   </button>
-                  <div>
-                    <h2 className="font-bold text-zinc-900 leading-tight flex items-center gap-1">
+                  <div className="min-w-0">
+                    <h2 className="font-bold text-zinc-900 leading-tight flex items-center gap-1 truncate">
                       {selectedChat ? getChatDisplayName(selectedChat) : 'User'}
                       {selectedChat?.isVerified && <ShieldCheck className="w-4 h-4 text-emerald-500" />}
                     </h2>
@@ -4575,7 +4586,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 shrink-0 max-md:overflow-x-auto max-md:max-w-[46vw]">
                   {selectedChat?.type !== 'ai' && (
                     <>
                       <button 
@@ -4684,7 +4695,7 @@ export default function App() {
               {/* Messages Area */}
               <div 
                 ref={messagesContainerRef}
-                className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 md:space-y-6 flex flex-col"
+                className="flex-1 overflow-y-auto p-3 md:p-6 space-y-4 md:space-y-6 flex flex-col"
                 onScroll={(e) => {
                   const target = e.target as HTMLDivElement;
                   if (target.scrollTop === 0) {
@@ -5162,8 +5173,8 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                <form onSubmit={sendMessage} className="flex items-center gap-3">
-                  <div className="flex items-center gap-1">
+                <form onSubmit={sendMessage} className="flex items-center gap-3 max-md:gap-2 max-md:w-full max-md:min-w-0">
+                  <div className="flex items-center gap-1 max-md:max-w-[40vw] max-md:overflow-x-auto max-md:shrink-0">
                     <div className="relative">
                       <button 
                         type="button"
@@ -5306,7 +5317,7 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  <div className="flex-1 relative">
+                  <div className="flex-1 relative min-w-0">
                     {selectedFile && (
                       <div className={cn(
                         "absolute left-0 -top-12 border rounded-xl p-2 flex items-center gap-2 shadow-sm",
@@ -5326,7 +5337,7 @@ export default function App() {
                       type="text" 
                       placeholder="Type a secure message..."
                       className={cn(
-                        "w-full pl-4 pr-12 py-3 border-none rounded-2xl text-sm focus:ring-2 focus:ring-emerald-500/20 transition-all",
+                        "w-full min-w-0 pl-4 pr-10 py-3 border-none rounded-2xl text-sm focus:ring-2 focus:ring-emerald-500/20 transition-all",
                         theme === 'dark' ? "bg-zinc-800 text-white placeholder:text-zinc-500" :
                         theme === 'glow' ? "bg-emerald-900/50 text-white placeholder:text-emerald-500/50 border border-emerald-500/20" :
                         "bg-zinc-100 text-zinc-900 placeholder:text-zinc-400"
@@ -5343,7 +5354,7 @@ export default function App() {
                     type="submit"
                     disabled={(!newMessage.trim() && !selectedImage && !selectedFile) || isSending}
                     className={cn(
-                      "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm",
+                      "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm shrink-0",
                       theme === 'glow' ? "bg-emerald-500 text-white hover:bg-emerald-600 shadow-emerald-500/20" :
                       "bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
                     )}
@@ -6316,7 +6327,9 @@ export default function App() {
           </div>
         )}
       </div>
-      <BottomNav />
+      <div className={cn(activeSection === 'chats' && selectedChatId && "max-md:hidden")}>
+        <BottomNav />
+      </div>
         </motion.div>
       </AnimatePresence>
 
