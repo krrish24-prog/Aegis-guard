@@ -2281,7 +2281,10 @@ export default function App() {
     const toChatList = (snapshot: { docs: { id: string; data: () => Record<string, unknown> }[] }) =>
       snapshot.docs
         .map(d => ({ id: d.id, ...d.data() } as Chat))
-        .filter(chat => !chat.deletedFor?.includes(user.uid));
+        .filter(chat =>
+          !chat.deletedFor?.includes(user.uid) &&
+          !(chat.type === 'group' && chat.groupName?.trim().toLowerCase() === 'trading group')
+        );
 
     const sortChats = (chatList: Chat[]) => {
       chatList.sort((a, b) => {
@@ -3449,6 +3452,27 @@ export default function App() {
     }
   };
 
+  const deleteGroupChat = async (chat: Chat) => {
+    if (!user || chat.type !== 'group') return;
+    try {
+      await updateDoc(doc(db, 'conversations', chat.id), {
+        deletedFor: arrayUnion(user.uid),
+        [`unreadCount.${user.uid}`]: 0,
+        updatedAt: serverTimestamp(),
+      });
+      setChats(prev => prev.filter(c => c.id !== chat.id));
+      if (selectedChatId === chat.id) {
+        setSelectedChatId(null);
+        setMessages([]);
+      }
+      setShowChatMenu(false);
+      showToast('Group deleted');
+    } catch (err) {
+      console.error('Delete group failed:', err);
+      showToast('Could not delete group');
+    }
+  };
+
   const startNewChat = async (otherUser: UserProfile) => {
     if (!user || (!user.email && !user.uid)) return;
 
@@ -4395,6 +4419,19 @@ export default function App() {
                           <Trash2 className="w-4 h-4 text-red-500" />
                         </span>
                       )}
+                      {chat.type === 'group' && (
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            deleteGroupChat(chat);
+                          }}
+                          className="opacity-0 group-hover:opacity-100 transition-opacity p-2 hover:bg-red-50 rounded-lg shrink-0"
+                          title="Delete group"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </span>
+                      )}
                     </button>
                   ))
                 )}
@@ -4554,6 +4591,15 @@ export default function App() {
                           <Trash2 className="w-5 h-5" />
                         </button>
                       )}
+                      {selectedChat.type === 'group' && (
+                        <button
+                          onClick={() => deleteGroupChat(selectedChat)}
+                          className="p-2 hover:bg-red-50 rounded-lg transition-colors text-red-600"
+                          title="Delete Group"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                      )}
                     </>
                   )}
                   <div className="relative">
@@ -4575,6 +4621,12 @@ export default function App() {
                             e.stopPropagation();
                             await deleteDirectContactAndChat(selectedChat);
                           }} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Delete Contact & Chat</button>
+                        )}
+                        {selectedChat.type === 'group' && (
+                          <button onClick={async (e) => {
+                            e.stopPropagation();
+                            await deleteGroupChat(selectedChat);
+                          }} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Delete Group</button>
                         )}
                         <button onClick={() => { setShowChatMenu(false); setShowMessagesSearch(true); }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Search Message</button>
                         {selectedChat.type !== 'ai' && (
@@ -5644,10 +5696,10 @@ export default function App() {
             "flex-1 flex flex-col overflow-hidden transition-all duration-500",
             theme === 'glow' ? "bg-emerald-950/40" : "bg-white"
           )}>
-            <div className="flex h-full">
+            <div className="flex h-full max-md:flex-col max-md:overflow-hidden">
               {/* Settings Sidebar */}
               <div className={cn(
-                "w-64 max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30 border-r flex flex-col transition-all",
+                "w-64 max-md:w-full max-md:h-auto max-md:max-h-[42vh] max-md:shrink-0 border-r max-md:border-r-0 max-md:border-b flex flex-col transition-all",
                 theme === 'glow' ? "bg-emerald-950/40 border-emerald-500/20" : "bg-zinc-50/50 border-zinc-100"
               )}>
                 <div className={cn(
@@ -5709,7 +5761,7 @@ export default function App() {
                 "flex-1 overflow-y-auto transition-all",
                 theme === 'glow' ? "bg-emerald-950/20" : "bg-white"
               )}>
-                <div className="p-12 max-w-2xl mx-auto w-full space-y-12">
+                <div className="p-12 max-md:p-5 max-w-2xl mx-auto w-full space-y-12 max-md:space-y-6">
                   {activeSettingsTab === 'profile' && renderProfileSettings()}
                   {activeSettingsTab === 'main' && (
                     <div className="space-y-8 animate-in fade-in slide-in-from-right-4 duration-500">
