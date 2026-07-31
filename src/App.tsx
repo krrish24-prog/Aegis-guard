@@ -1755,7 +1755,12 @@ export default function App() {
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
 
-              if (!publicData.displayName || publicData.displayName === 'Anonymous') setShowCompleteProfile(true);
+              if (!publicData.displayName || ['Anonymous', 'User'].includes(String(publicData.displayName))) {
+                setEditDisplayName(u.displayName || '');
+                setEditPhoneNumber(String(privateData.phoneNumber || ''));
+                setEditStatus(String(publicData.status || 'Hey there! I am using Aegis.'));
+                setShowCompleteProfile(true);
+              }
             } else {
               const keys = await EncryptionService.getOrCreateKeyPair(u.uid);
               const email = u.email?.toLowerCase() || '';
@@ -1769,6 +1774,10 @@ export default function App() {
                 setDoc(doc(db, 'users_public', u.uid), newPublicProfile),
               ]);
               setProfile({ ...newPublicProfile, ...newPrivateProfile } as UserProfile);
+              setEditDisplayName(u.displayName || '');
+              setEditPhoneNumber('');
+              setEditStatus('Hey there! I am using Aegis.');
+              setShowCompleteProfile(true);
 
               try {
                 const keyMeta = await KeyManagementService.getOrCreateKeys(u.uid);
@@ -1780,7 +1789,7 @@ export default function App() {
               }
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
-              if (!u.displayName) setShowCompleteProfile(true);
+              setShowCompleteProfile(true);
             }
           } catch (error: any) {
             console.error('Profile fetch error — attempting recovery', error);
@@ -1792,7 +1801,7 @@ export default function App() {
               const newPrivateProfile = { uid: u.uid, email };
               const newPublicProfile = {
                 uid: u.uid, email,
-                displayName: u.displayName || 'User',
+                displayName: u.displayName || 'Anonymous',
                 photoURL: u.photoURL || '',
                 online: true, publicKey: keys.publicKey,
               };
@@ -1801,8 +1810,11 @@ export default function App() {
                 setDoc(doc(db, 'users_public', u.uid), newPublicProfile, { merge: true }),
               ]);
               setProfile({ ...newPublicProfile, ...newPrivateProfile } as UserProfile);
+              setEditDisplayName(u.displayName || '');
+              setEditPhoneNumber('');
+              setEditStatus('Hey there! I am using Aegis.');
+              setShowCompleteProfile(true);
               setFirestoreError(null);
-              showToast('Profile recovered — welcome back!');
             } catch (recoveryError) {
               console.error('Profile recovery failed', recoveryError);
               setFirestoreError('Could not load profile. Try refreshing the page.');
@@ -2292,8 +2304,8 @@ export default function App() {
       };
 
       await Promise.all([
-        updateDoc(doc(db, 'users', user.uid), privateUpdate),
-        updateDoc(doc(db, 'users_public', user.uid), publicUpdate)
+        setDoc(doc(db, 'users', user.uid), privateUpdate, { merge: true }),
+        setDoc(doc(db, 'users_public', user.uid), publicUpdate, { merge: true })
       ]);
 
       const updatedProfile = {
@@ -2306,6 +2318,7 @@ export default function App() {
       setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
       setSyncedContacts(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
       setShowSettings(false);
+      setShowCompleteProfile(false);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.email}`);
     } finally {
