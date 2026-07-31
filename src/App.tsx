@@ -3732,43 +3732,44 @@ export default function App() {
   };
 
   const searchUsers = async (queryStr: string) => {
-    if (!queryStr.trim()) {
+    const rawQuery = queryStr.trim();
+    const searchTerm = rawQuery.toLowerCase();
+    if (!searchTerm) {
       setSearchResults([]);
       return;
     }
-    
-    try {
-      const isEmail = queryStr.includes('@');
-      let results: UserProfile[] = [];
-      
-      const buildResults = (snapshot: any) =>
-        snapshot.docs
-          .map((doc: any) => ({
-            ...doc.data(),
-            uid: doc.data().uid || doc.id,  // fallback to doc ID if uid field missing
-          } as UserProfile))
-          .filter((u: UserProfile) => u.email?.toLowerCase() !== user?.email?.toLowerCase() && u.uid !== user?.uid);
 
-      if (isEmail) {
+    try {
+      const currentEmail = user?.email?.toLowerCase();
+      const resultsByKey = new Map<string, UserProfile>();
+      const addResult = (candidate: Partial<UserProfile>) => {
+        const email = candidate.email?.toLowerCase() || '';
+        const uid = candidate.uid || candidate.id || email;
+        if (!uid || uid === user?.uid || email === currentEmail) return;
+        resultsByKey.set(uid, { ...candidate, uid, email } as UserProfile);
+      };
+      const matches = (candidate: Partial<UserProfile>) =>
+        [candidate.displayName, candidate.email, candidate.phoneNumber]
+          .filter(Boolean)
+          .some(value => value!.toLowerCase().includes(searchTerm));
+
+      [...syncedContacts, ...allUsers].filter(matches).forEach(addResult);
+
+      if (rawQuery.includes('@')) {
         const qEmail = query(
           collection(db, 'users_public'),
-          where('email', '==', queryStr.trim().toLowerCase()),
+          where('email', '==', searchTerm),
           limit(1)
         );
         const snapshotEmail = await getDocs(qEmail);
-        results = buildResults(snapshotEmail);
-      } else {
-        const q = query(
-          collection(db, 'users_public'),
-          where('displayName', '>=', queryStr),
-          where('displayName', '<=', queryStr + '\uf8ff'),
-          limit(20)
-        );
-        const snapshot = await getDocs(q);
-        results = buildResults(snapshot);
+        snapshotEmail.docs.forEach(docSnap => addResult({ ...docSnap.data(), uid: docSnap.id } as UserProfile));
       }
-        
-      setSearchResults(results);
+
+      if (resultsByKey.size === 0 && syncedContacts.length > 0) {
+        syncedContacts.forEach(addResult);
+      }
+
+      setSearchResults(Array.from(resultsByKey.values()).slice(0, 20));
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, 'users_public');
     }
@@ -6628,9 +6629,14 @@ export default function App() {
                           email: trimmedEmail
                         } as UserProfile;
                         await handleSaveContact(newContact);
-                        setActiveSection('contacts');
-                        setSelectedChatId(null);
-                        setMessages([]);
+                        setSyncedContacts(prev => [
+                          newContact,
+                          ...prev.filter(c =>
+                            (c.uid || c.id) !== newContact.uid &&
+                            c.email?.toLowerCase() !== trimmedEmail
+                          )
+                        ]);
+                        await startNewChat(newContact);
                         setShowNewChat(false);
                         setEmailInputSearch('');
                         setEmailContactName('');
