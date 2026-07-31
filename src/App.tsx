@@ -17,7 +17,8 @@ import {
   User as FirebaseUser,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  deleteUser
 } from 'firebase/auth';
 import { 
   collection, 
@@ -1321,6 +1322,28 @@ export default function App() {
     installPrompt.prompt();
     await installPrompt.userChoice.catch(() => null);
     setInstallPrompt(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    const currentUser = auth.currentUser;
+    if (!user?.uid || !currentUser) return;
+    if (!window.confirm('Delete this account permanently? This cannot be undone.')) return;
+
+    try {
+      await Promise.allSettled([
+        deleteDoc(doc(db, 'users', user.uid)),
+        deleteDoc(doc(db, 'users_public', user.uid))
+      ]);
+      await deleteUser(currentUser);
+      showToast('Account deleted');
+    } catch (error: any) {
+      if (error?.code === 'auth/requires-recent-login') {
+        showToast('Please log out, log in again, then delete account');
+      } else {
+        showToast('Could not delete account');
+      }
+      console.error('Failed to delete account', error);
+    }
   };
 
   useEffect(() => {
@@ -5995,20 +6018,7 @@ export default function App() {
                             <UserPlus className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
                             <span className="text-sm font-bold text-zinc-900">Add Secure Contact</span>
                           </button>
-                          <button onClick={async () => {
-                              // if(confirm(t.deleteAccount + "? This action cannot be undone and all your data will be permanently removed.")) {
-                                try {
-                                  if (user?.uid) {
-                                    await deleteDoc(doc(db, 'users', user?.uid));
-                                    await deleteDoc(doc(db, 'users_public', user?.uid));
-                                  }
-                                  await auth.signOut();
-                                  console.log("Account deleted successfully.");
-                                } catch (error) {
-                                  console.error("Failed to delete account", error);
-                                }
-                              // }
-                            }} className={cn(
+                          <button onClick={handleDeleteAccount} className={cn(
                             "w-full p-4 rounded-2xl border flex items-center gap-3 transition-all",
                             theme === 'glow' ? "bg-red-900/20 border-red-500/20 hover:bg-red-900/30" : "bg-red-50 border-red-100 hover:bg-red-100"
                           )}>
@@ -6807,22 +6817,7 @@ export default function App() {
                         <h4 className="text-sm font-bold text-red-600">Danger Zone</h4>
                         <div className="p-2 rounded-2xl border border-red-100 bg-red-50/30">
                           <button 
-                            onClick={async () => {
-                              // if(confirm(t.deleteAccount + "? This action cannot be undone and all your data will be permanently removed.")) {
-                                try {
-                                  // In a real app, we would delete all user data across all collections
-                                  // For now, we'll delete the user profile and sign out
-                                  if (user?.uid) {
-                                    await deleteDoc(doc(db, 'users', user?.uid));
-                                    await deleteDoc(doc(db, 'users_public', user?.uid));
-                                  }
-                                  await auth.signOut();
-                                  console.log("Account deleted successfully.");
-                                } catch (error) {
-                                  console.error("Failed to delete account", error);
-                                }
-                              // }
-                            }}
+                            onClick={handleDeleteAccount}
                             className="w-full p-3 flex items-center gap-4 hover:bg-red-50 rounded-xl transition-all text-left"
                           >
                             <div className="w-8 h-8 rounded-lg bg-red-100 text-red-600 flex items-center justify-center">
