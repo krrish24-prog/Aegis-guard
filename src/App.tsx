@@ -4069,7 +4069,7 @@ export default function App() {
   );
   const BottomNav = () => (
     <div className={cn(
-      "h-16 md:h-20 border-t flex items-center justify-around px-2 md:px-4 backdrop-blur-xl z-50",
+      "h-16 md:h-20 border-t flex items-center justify-around px-2 md:px-4 backdrop-blur-xl z-[80] shrink-0 max-md:fixed max-md:left-0 max-md:right-0 max-md:bottom-0 max-md:pointer-events-auto",
       theme === 'dark' ? "bg-zinc-950/80 border-zinc-800" : 
       theme === 'glow' ? "bg-emerald-950/80 border-emerald-800/50" : 
       "bg-white/80 border-zinc-200"
@@ -4236,7 +4236,7 @@ export default function App() {
             {/* Sidebar */}
             <div className={cn(
               "w-80 lg:w-72 xl:w-80 border-r border-zinc-200 bg-white flex flex-col shrink-0",
-              "max-md:w-full max-md:absolute max-md:inset-0 max-md:z-30",
+              "max-md:w-full max-md:absolute max-md:inset-0 max-md:bottom-16 max-md:z-30",
               selectedChatId && "max-md:hidden"
             )}>
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
@@ -5743,7 +5743,7 @@ export default function App() {
 
         ) : (
           <div className={cn(
-            "flex-1 flex flex-col overflow-hidden transition-all duration-500",
+            "flex-1 flex flex-col overflow-hidden transition-all duration-500 max-md:pb-16",
             theme === 'glow' ? "bg-emerald-950/40" : "bg-white"
           )}>
             <div className="flex h-full max-md:flex-col max-md:overflow-hidden">
