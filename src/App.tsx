@@ -1018,6 +1018,8 @@ export default function App() {
   const [keypadInput, setKeypadInput] = useState('');
   const [keypadName, setKeypadName] = useState('');
   const [emailInputSearch, setEmailInputSearch] = useState('');
+  const [emailContactName, setEmailContactName] = useState('');
+  const [emailContactPhone, setEmailContactPhone] = useState('');
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
   const [allContacts, setAllContacts] = useState<UserProfile[]>([]);
   const [syncedContacts, setSyncedContacts] = useState<UserProfile[]>([]);
@@ -6397,7 +6399,16 @@ export default function App() {
             >
               <div className="p-6 border-b border-zinc-100 flex items-center justify-between">
                 <h2 className="text-xl font-bold">{t.addSecureContact || 'Add Secure Contact'}</h2>
-                <button onClick={() => setShowNewChat(false)} className="text-zinc-400 hover:text-zinc-600">
+                <button onClick={() => {
+                  setShowNewChat(false);
+                  setUserSearchQuery('');
+                  setSearchResults([]);
+                  setEmailInputSearch('');
+                  setEmailContactName('');
+                  setEmailContactPhone('');
+                  setKeypadInput('');
+                  setKeypadName('');
+                }} className="text-zinc-400 hover:text-zinc-600">
                   <XCircle className="w-6 h-6" />
                 </button>
               </div>
@@ -6571,6 +6582,20 @@ export default function App() {
                         onChange={(e) => setEmailInputSearch(e.target.value)}
                       />
                     </div>
+                    <input
+                      type="text"
+                      placeholder="Contact name"
+                      className="mt-3 w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-2xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none"
+                      value={emailContactName}
+                      onChange={(e) => setEmailContactName(e.target.value)}
+                    />
+                    <input
+                      type="tel"
+                      placeholder="Phone number (optional)"
+                      className="mt-3 w-full px-4 py-3.5 bg-zinc-50 border border-zinc-200 rounded-2xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all outline-none"
+                      value={emailContactPhone}
+                      onChange={(e) => setEmailContactPhone(e.target.value)}
+                    />
                   </div>
                   <button 
                     disabled={!emailInputSearch.includes('@')}
@@ -6581,11 +6606,22 @@ export default function App() {
                           alert('This email is not registered in Aegis Guard yet.');
                           return;
                         }
-                        const newContact = { uid: snap.docs[0].id, ...snap.docs[0].data(), email: trimmedEmail } as UserProfile;
+                        const foundUser = snap.docs[0].data() as UserProfile;
+                        const newContact = {
+                          uid: snap.docs[0].id,
+                          ...foundUser,
+                          displayName: emailContactName.trim() || foundUser.displayName || trimmedEmail.split('@')[0],
+                          phoneNumber: emailContactPhone.trim() || foundUser.phoneNumber || '',
+                          email: trimmedEmail
+                        } as UserProfile;
                         await handleSaveContact(newContact);
-                        await startNewChat(newContact);
+                        setActiveSection('contacts');
+                        setSelectedChatId(null);
+                        setMessages([]);
                         setShowNewChat(false);
                         setEmailInputSearch('');
+                        setEmailContactName('');
+                        setEmailContactPhone('');
                     }}
                     className="w-full py-3.5 mt-auto shrink-0 bg-emerald-500 text-white font-bold rounded-2xl hover:bg-emerald-600 active:scale-95 transition-all outline-none disabled:opacity-50"
                   >
