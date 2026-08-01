@@ -4527,8 +4527,8 @@ export default function App() {
               className="flex flex-col h-full"
             >
               {/* Chat Header */}
-      <div className="p-4 max-md:px-3 max-md:py-3 border-b border-zinc-100 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
-                <div className="flex items-center gap-2 min-w-0">
+      <div className="p-4 max-md:px-3 max-md:py-3 border-b border-zinc-100 flex items-center justify-between gap-3 bg-white/80 backdrop-blur-md sticky top-0 z-10">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
                   <button
                     onClick={() => {
                       setSelectedChatId(null);
@@ -4549,9 +4549,9 @@ export default function App() {
                      selectedChat?.type === 'ai' ? <Shield className="w-5 h-5 text-emerald-500" /> : 
                      selectedChat?.type === 'group' ? <Users className="w-5 h-5" /> : <UserIcon className="w-5 h-5" />}
                   </button>
-                  <div className="min-w-0">
-                    <h2 className="font-bold text-zinc-900 leading-tight flex items-center gap-1 truncate">
-                      {selectedChat ? getChatDisplayName(selectedChat) : 'User'}
+                  <div className="min-w-0 flex-1">
+                    <h2 className="font-bold !text-zinc-900 leading-tight flex items-center gap-1 min-w-0">
+                      <span className="truncate max-w-[36vw] max-md:max-w-[34vw]">{selectedChat ? getChatDisplayName(selectedChat) : 'User'}</span>
                       {selectedChat?.isVerified && <ShieldCheck className="w-4 h-4 text-emerald-500" />}
                     </h2>
                     <div className="flex items-center gap-1.5 mt-0.5">
