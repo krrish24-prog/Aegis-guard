@@ -16,7 +16,17 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const DEFAULT_NVIDIA_MODEL = process.env.NVIDIA_MODEL || "meta/llama-3.1-8b-instruct";
+const FALLBACK_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
+const RETIRED_NVIDIA_MODELS = new Map([
+  ["meta/llama-3.1-8b-instruct", FALLBACK_NVIDIA_MODEL],
+]);
+
+const resolveNvidiaModel = (model = process.env.NVIDIA_MODEL || FALLBACK_NVIDIA_MODEL) => {
+  const normalized = model.trim();
+  return RETIRED_NVIDIA_MODELS.get(normalized) || normalized || FALLBACK_NVIDIA_MODEL;
+};
+
+const DEFAULT_NVIDIA_MODEL = resolveNvidiaModel();
 
 const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwrite.io/v1").replace(/\/$/, "");
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
@@ -43,12 +53,16 @@ type AiClient =
 
 const getAIClient = (): AiClient | null => {
   if (process.env.NVIDIA_API_KEY) {
-    console.log(`NVIDIA API key loaded; using model ${process.env.NVIDIA_MODEL || DEFAULT_NVIDIA_MODEL}`);
+    const model = resolveNvidiaModel();
+    if (process.env.NVIDIA_MODEL && process.env.NVIDIA_MODEL !== model) {
+      console.warn(`NVIDIA_MODEL ${process.env.NVIDIA_MODEL} is retired; using ${model} instead.`);
+    }
+    console.log(`NVIDIA API key loaded; using model ${model}`);
     return {
       type: "nvidia",
       apiKey: process.env.NVIDIA_API_KEY,
       url: process.env.NVIDIA_API_URL || DEFAULT_NVIDIA_URL,
-      model: process.env.NVIDIA_MODEL || DEFAULT_NVIDIA_MODEL,
+      model,
     };
   }
 
@@ -78,6 +92,22 @@ const FAIL_CLOSED_GROUP = JSON.stringify({
   reason: "Verification unavailable — proceed with caution.",
   threatMarkers: ["Service Error"],
 });
+
+const userFacingAiError = (error: any) => {
+  if (error?.status === 410) {
+    return "The previous AI model expired. Aegis Guard now uses the current model; please try again in a moment.";
+  }
+  if (error?.status === 429) {
+    return "AI service quota is temporarily exhausted. Please wait a moment and try again.";
+  }
+  if (error?.status === 404) {
+    return "The configured AI model is not available. Please check the Render NVIDIA_MODEL setting.";
+  }
+  if (error?.status === 503) {
+    return "AI service is temporarily unavailable. Please try again shortly.";
+  }
+  return "AI service temporarily unavailable. Please try again.";
+};
 
 async function startServer() {
   const app = express();
@@ -454,8 +484,9 @@ async function startServer() {
     if (!response.ok) {
       const errText = await response.text();
       console.error(`NVIDIA API error ${response.status}:`, errText);
-      const err = new Error(`NVIDIA request failed: ${response.status} ${errText}`);
+      const err = new Error(userFacingAiError({ status: response.status }));
       (err as any).status = response.status;
+      (err as any).providerError = errText;
       throw err;
     }
 
@@ -592,15 +623,15 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
       if (!res.headersSent) {
           if (error?.status === 429) {
               res.status(429).json({ 
-                error: "AI service quota temporarily exhausted. Please wait a moment and try again.",
+                error: userFacingAiError(error),
                 retryAfter: 60,
                 isQuotaError: true
               });
           } else {
-              res.status(500).json({ error: error.message || 'AI service temporarily unavailable' });
+              res.status(error?.status === 410 ? 503 : 500).json({ error: userFacingAiError(error) });
           }
       } else {
-          res.write(`data: ${JSON.stringify({ error: error.message || 'Stream error' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ error: userFacingAiError(error) })}\n\n`);
           res.end();
       }
     }
