@@ -16,7 +16,7 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const FALLBACK_NVIDIA_MODEL = "meta/llama-3.3-70b-instruct";
+const FALLBACK_NVIDIA_MODEL = "nvidia/llama-3.3-nemotron-super-49b-v1.5";
 const RETIRED_NVIDIA_MODELS = new Map([
   ["meta/llama-3.1-8b-instruct", FALLBACK_NVIDIA_MODEL],
 ]);
