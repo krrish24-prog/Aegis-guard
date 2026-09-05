@@ -16,7 +16,7 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const FALLBACK_NVIDIA_MODEL = "qwen/qwen3.5-122b-a10b";
+const FALLBACK_NVIDIA_MODEL = "moonshotai/kimi-k2.6";
 const RETIRED_NVIDIA_MODELS = new Map([
   ["meta/llama-3.1-8b-instruct", FALLBACK_NVIDIA_MODEL],
 ]);
@@ -937,5 +937,6 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
 }
 
 startServer();
+
 
 
