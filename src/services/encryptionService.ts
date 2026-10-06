@@ -45,7 +45,6 @@ export class EncryptionService {
           false,
           ["encrypt"]
         );
-        console.log(`[E2EE] Loaded existing keys for ${userId}. Pub: ${pub.substring(0, 10)}...${pub.substring(pub.length-10)} Priv: ${priv.substring(0, 10)}...${priv.substring(priv.length-10)}`);
         return { publicKey: pub, privateKey: priv };
       } catch (e) {
         console.warn(`[E2EE] Stored security keys are invalid or corrupted for ${userId}. Regenerating...`, e);
@@ -75,7 +74,6 @@ export class EncryptionService {
     localStorage.setItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`, pubStr);
     localStorage.setItem(`${this.STORAGE_PRIVATE_KEY}_${userId}`, privStr);
 
-    console.log(`[E2EE] Generated keys for ${userId}. Pub: ${pubStr.substring(0, 10)}...${pubStr.substring(pubStr.length-10)} Priv: ${privStr.substring(0, 10)}...${privStr.substring(privStr.length-10)}`);
     return { publicKey: pubStr, privateKey: privStr };
   }
 

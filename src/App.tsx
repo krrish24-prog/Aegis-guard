@@ -2734,7 +2734,7 @@ export default function App() {
       
       if (!aiText && streamError) {
         const isQuota = /quota|429|rate.?limit/i.test(streamError);
-        await saveAIResponse(isQuota ? localFallbackResponse() : `AI backend error: ${streamError}.`);
+        await saveAIResponse(isQuota ? localFallbackResponse() : streamError || localFallbackResponse());
         return;
       }
       if (!aiText) return;

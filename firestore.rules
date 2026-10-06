@@ -35,9 +35,15 @@ service cloud.firestore {
       return data.uid is string;
     }
 
+    // NOTE: deliberately no `participants is list` type guard here. That guard
+    // makes the rule unsatisfiable for LIST queries, because Firestore cannot
+    // prove a query constraint implies a type check on resource.data, and the
+    // chat list then fails with permission-denied. Verified against the
+    // Firestore emulator: with the guard, array-contains queries are denied.
+    // A non-list `participants` simply makes the `in` test error, which denies.
     function isConversationParticipant(participants) {
-      return participants is list
-        && (getUserUid() in participants || (getUserEmail() != '' && getUserEmail() in participants));
+      return getUserUid() in participants
+        || (getUserEmail() != '' && getUserEmail() in participants);
     }
 
     function conversationDoc(chatId) {
@@ -49,39 +55,64 @@ service cloud.firestore {
         && isConversationParticipant(conversationDoc(chatId).data.participants);
     }
 
-    // Private user profiles — private keys must never be stored server-side
+    // Private user profiles — private keys must never be stored server-side.
+    // Public profile data (displayName, photoURL, publicKey, presence) lives in
+    // /users_public, so a private profile is only ever read by its own owner.
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && hasNoPrivateKey();
-      allow update: if isAuthenticated() && hasNoPrivateKey();
+      allow read: if isMe(userId) || isAdmin();
+      allow create: if isMe(userId) && hasNoPrivateKey();
+      allow update: if isMe(userId) && hasNoPrivateKey();
+      allow delete: if isMe(userId) || isAdmin();
 
+      // Contact lists.
+      // Reads stay open to signed-in users: reciprocal discovery checks whether
+      // another user has already added you, which requires reading their list.
+      // Writes are limited to the list owner, or to a user adding *themselves*
+      // to someone else's list (the reciprocal_auto write). That self-add is
+      // accepted only when both the document id and the stored uid equal the
+      // writer's uid, so nobody can plant, rename or delete contacts they do
+      // not own.
       match /contacts/{contactId} {
-        allow read, write: if isAuthenticated();
+        allow read: if isAuthenticated();
+        allow create, update: if isAuthenticated()
+          && (isMe(userId)
+              || (contactId == getUserUid() && request.resource.data.uid == getUserUid()));
+        allow delete: if isMe(userId) || isAdmin();
       }
     }
 
+    // Public profile directory — readable by any signed-in user so that user
+    // search, presence and public-key lookup keep working, but a profile can
+    // only be written by its owner (or an admin). This blocks public-key
+    // substitution and account-status tampering by other users.
     match /users_public/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
+      allow create: if isMe(userId) || isAdmin();
+      allow update: if isMe(userId) || isAdmin();
+      allow delete: if isMe(userId) || isAdmin();
     }
 
     match /conversations/{chatId} {
-      allow get, list: if isAuthenticated();
+      // Only participants may read or modify a conversation. The client always
+      // queries with where('participants', 'array-contains', ...), so these
+      // rules stay satisfiable for list queries.
+      allow get, list: if isConversationParticipant(resource.data.participants);
       allow create: if isAuthenticated()
         && request.resource.data.participants is list
-        && getUserUid() in request.resource.data.participants;
-      allow update: if isAuthenticated();
+        && isConversationParticipant(request.resource.data.participants);
+      allow update: if isConversationParticipant(resource.data.participants);
+      allow delete: if isConversationParticipant(resource.data.participants);
 
       match /messages/{messageId} {
-        allow read: if isAuthenticated();
+        // Only members of the parent conversation may read or modify messages.
+        allow read: if isMemberOfChat(chatId);
 
-        allow create: if isAuthenticated()
+        allow create: if isMemberOfChat(chatId)
           && (getUserUid() == request.resource.data.senderId
               || request.resource.data.senderId == 'aegis-guard@aegis.ai');
 
-        allow update: if isAuthenticated();
-        allow delete: if isAuthenticated();
+        allow update: if isMemberOfChat(chatId);
+        allow delete: if isMemberOfChat(chatId);
       }
     }
 
