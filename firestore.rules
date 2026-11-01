@@ -96,7 +96,16 @@ service cloud.firestore {
       // Only participants may read or modify a conversation. The client always
       // queries with where('participants', 'array-contains', ...), so these
       // rules stay satisfiable for list queries.
-      allow get, list: if isConversationParticipant(resource.data.participants);
+      //
+      // A `get` on a conversation that does not exist yet must also be allowed:
+      // starting a brand-new chat first probes the document to see whether it
+      // was previously deleted. Denying that probe makes `getDoc` throw
+      // permission-denied instead of returning "not found", so the client never
+      // reaches the create call and adding a contact appears to do nothing.
+      // There is no data to protect when the document does not exist.
+      allow get: if !exists(/databases/$(database)/documents/conversations/$(chatId))
+        || isConversationParticipant(resource.data.participants);
+      allow list: if isConversationParticipant(resource.data.participants);
       allow create: if isAuthenticated()
         && request.resource.data.participants is list
         && isConversationParticipant(request.resource.data.participants);

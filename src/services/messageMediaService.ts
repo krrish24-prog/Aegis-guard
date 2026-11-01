@@ -23,7 +23,24 @@ export function mimeFromFileName(name: string): string {
   if (n.endsWith('.png')) return 'image/png';
   if (n.endsWith('.gif')) return 'image/gif';
   if (n.endsWith('.webp')) return 'image/webp';
-  if (n.endsWith('.txt')) return 'text/plain';
+  if (n.endsWith('.txt') || n.endsWith('.log')) return 'text/plain';
+  if (n.endsWith('.md')) return 'text/markdown';
+  if (n.endsWith('.csv')) return 'text/csv';
+  if (n.endsWith('.json')) return 'application/json';
+  if (n.endsWith('.xml')) return 'application/xml';
+  if (n.endsWith('.html') || n.endsWith('.htm')) return 'text/html';
+  if (n.endsWith('.yml') || n.endsWith('.yaml')) return 'text/yaml';
+  if (n.endsWith('.rtf')) return 'application/rtf';
+  if (n.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (n.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (n.endsWith('.pptx')) return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  if (n.endsWith('.odt')) return 'application/vnd.oasis.opendocument.text';
+  if (n.endsWith('.ods')) return 'application/vnd.oasis.opendocument.spreadsheet';
+  if (n.endsWith('.odp')) return 'application/vnd.oasis.opendocument.presentation';
+  if (n.endsWith('.doc')) return 'application/msword';
+  if (n.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (n.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
+  if (n.endsWith('.zip')) return 'application/zip';
   return 'application/octet-stream';
 }
 
@@ -196,9 +213,13 @@ export async function shrinkForAnalysis(dataUrl: string, maxDim = 1024): Promise
   });
 }
 
+const IGNORED_DOCUMENT_URL = /schemas\.openxmlformats\.org|schemas\.microsoft\.com|w3\.org|purl\.org|openoffice\.org\/namespaces|adobe\.com\/xap|ns\.adobe\.com/i;
+
 function summarizePdfStructure(bytes: Uint8Array): string {
   const raw = new TextDecoder('latin1').decode(bytes);
-  const urls = [...new Set(raw.match(/https?:\/\/[^\s<>()\[\]{}"']+/gi) ?? [])].slice(0, 20);
+  const urls = [...new Set(raw.match(/https?:\/\/[^\s<>()\[\]{}"']+/gi) ?? [])]
+    .filter((url) => !IGNORED_DOCUMENT_URL.test(url))
+    .slice(0, 20);
   const markers = [
     ['/JavaScript', 'Embedded JavaScript action'],
     ['/JS', 'JavaScript action shortcut'],
@@ -248,6 +269,144 @@ async function extractPdfText(dataUrl: string): Promise<string> {
   return [pages.join('\n'), structureReport].filter(Boolean).join('\n\n').slice(0, 12_000);
 }
 
+const TEXT_DOCUMENT_MIME = /^(text\/|application\/(json|xml|rtf|javascript|x-www-form-urlencoded))/i;
+const ARCHIVE_DOCUMENT_MIME = /(officedocument|opendocument|msword|ms-excel|ms-powerpoint|zip|rtf)/i;
+
+function base64ToBytes(dataUrl: string): Uint8Array {
+  const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+  const binary = atob(base64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function decodeTextDocument(dataUrl: string, limit = 12_000): string {
+  try {
+    return new TextDecoder('utf-8').decode(base64ToBytes(dataUrl)).slice(0, limit);
+  } catch {
+    return '';
+  }
+}
+
+interface ZipEntry {
+  name: string;
+  method: number;
+  compressedSize: number;
+  localOffset: number;
+}
+
+/** Read the ZIP central directory of an OOXML/ODF/zip container. */
+function listZipEntries(bytes: Uint8Array): ZipEntry[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  const minOffset = Math.max(0, bytes.length - 65_557);
+  for (let i = bytes.length - 22; i >= minOffset; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return [];
+
+  const count = view.getUint16(eocd + 10, true);
+  let offset = view.getUint32(eocd + 16, true);
+  const entries: ZipEntry[] = [];
+
+  for (let i = 0; i < count && offset + 46 <= bytes.length; i++) {
+    if (view.getUint32(offset, true) !== 0x02014b50) break;
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    entries.push({
+      name: new TextDecoder().decode(bytes.subarray(offset + 46, offset + 46 + nameLength)),
+      method: view.getUint16(offset + 10, true),
+      compressedSize: view.getUint32(offset + 20, true),
+      localOffset: view.getUint32(offset + 42, true),
+    });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
+async function readZipEntry(bytes: Uint8Array, entry: ZipEntry): Promise<Uint8Array | null> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (entry.localOffset + 30 > bytes.length) return null;
+  if (view.getUint32(entry.localOffset, true) !== 0x04034b50) return null;
+
+  const nameLength = view.getUint16(entry.localOffset + 26, true);
+  const extraLength = view.getUint16(entry.localOffset + 28, true);
+  const start = entry.localOffset + 30 + nameLength + extraLength;
+  const end = start + entry.compressedSize;
+  if (end > bytes.length) return null;
+
+  const raw = bytes.subarray(start, end);
+  if (entry.method === 0) return raw;
+  if (entry.method !== 8 || typeof DecompressionStream === 'undefined') return null;
+
+  try {
+    const source = new Uint8Array(raw).buffer;
+    const stream = new Blob([source]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/** Extract readable text and links from OOXML/ODF/zip documents for analysis. */
+async function extractArchiveDocumentText(dataUrl: string): Promise<string> {
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(dataUrl);
+  } catch {
+    return '';
+  }
+
+  const entries = listZipEntries(bytes);
+  if (entries.length === 0) return '';
+
+  const texts: string[] = [];
+  const urls = new Set<string>();
+  let budget = 600_000;
+
+  for (const entry of entries) {
+    const name = entry.name.toLowerCase();
+    if (!name.endsWith('.xml') && !name.endsWith('.txt') && !name.endsWith('.rels')) continue;
+    if (entry.compressedSize > 2_000_000 || budget <= 0) continue;
+
+    const data = await readZipEntry(bytes, entry);
+    if (!data?.length) continue;
+    budget -= data.length;
+
+    const xml = new TextDecoder('utf-8').decode(data.subarray(0, Math.min(data.length, 400_000)));
+    for (const url of xml.match(/https?:\/\/[^\s<>"')\]}]+/g) ?? []) {
+      if (!IGNORED_DOCUMENT_URL.test(url)) urls.add(url);
+    }
+
+    const plain = xml
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (plain) texts.push(plain);
+    if (texts.join(' ').length > 12_000) break;
+  }
+
+  const parts: string[] = [];
+  const body = texts.join(' ').slice(0, 12_000);
+  if (body) parts.push(body);
+  if (urls.size > 0) parts.push(`Links found:\n${[...urls].slice(0, 20).join('\n')}`);
+  return parts.join('\n\n');
+}
+
+function describeUnreadableAttachment(mimeType: string, fileName?: string): string {
+  return `[No text could be extracted from "${fileName || 'attachment'}" (type: ${mimeType}). Only file metadata is available for this attachment.]`;
+}
+
 export async function buildFileDataInfo(
   decryptedImageUrl?: string,
   decryptedFileData?: string,
@@ -266,9 +425,22 @@ export async function buildFileDataInfo(
 
   if (mimeType.startsWith('image/')) {
     data = await shrinkForAnalysis(data);
-  } else if (mimeType === 'application/pdf' && data.startsWith('data:')) {
+    return { data, mimeType };
+  }
+
+  if (!data.startsWith('data:')) return { data, mimeType };
+
+  if (mimeType === 'application/pdf') {
     const pdfText = await extractPdfText(data);
-    data = pdfText || '[PDF contained no extractable text]';
+    data = pdfText || describeUnreadableAttachment(mimeType, decryptedFileName);
+  } else if (ARCHIVE_DOCUMENT_MIME.test(mimeType)) {
+    const archiveText = await extractArchiveDocumentText(data);
+    data = archiveText || describeUnreadableAttachment(mimeType, decryptedFileName);
+  } else if (TEXT_DOCUMENT_MIME.test(mimeType)) {
+    const text = decodeTextDocument(data).trim();
+    data = text || describeUnreadableAttachment(mimeType, decryptedFileName);
+  } else {
+    data = describeUnreadableAttachment(mimeType, decryptedFileName);
   }
 
   return { data, mimeType };

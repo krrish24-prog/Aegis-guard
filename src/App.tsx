@@ -3414,6 +3414,46 @@ export default function App() {
     e.target.value = '';
   };
 
+  const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
+  const handleDocumentSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Allow selecting the same file again.
+    e.target.value = '';
+    if (!file) return;
+
+    // Images always go through the image pipeline so they render inline.
+    if (file.type.startsWith('image/')) {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const imageForFirestore = base64.length > 520_000 ? await resizeImage(base64) : base64;
+      if (imageForFirestore.length > 700_000) {
+        alert("This image is too large for free encrypted sending. Please choose a smaller image or screenshot.");
+        return;
+      }
+      setSelectedImage(imageForFirestore);
+      setSelectedFile(null);
+      return;
+    }
+
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      alert("Documents must be 10 MB or smaller for secure transmission.");
+      return;
+    }
+
+    setSelectedImage(null);
+    setSelectedFile({
+      name: file.name,
+      size: file.size,
+      date: new Date().toLocaleDateString(),
+      file,
+    });
+  };
+
   const getOtherParticipantIdentifier = (chat: Chat) => {
     return chat.participants?.find(p => 
       p?.toLowerCase() !== user?.email?.toLowerCase() && 
@@ -3562,24 +3602,32 @@ export default function App() {
 
     try {
       // 2. Check if this chat was previously deleted (exists in Firestore but filtered from UI)
-      const chatDoc = await getDoc(doc(db, 'conversations', chatId));
-      if (chatDoc.exists()) {
-        const chatData = chatDoc.data();
-        if (chatData.deletedFor?.includes(user.uid)) {
-          // Previously deleted — set a fresh resetAt timestamp so old messages are filtered out
-          console.log("conversation creation debug log: Re-adding deleted chat — setting fresh resetAt", chatId);
-          // Remove user from deletedFor and set reset timestamp for fresh start
-          await updateDoc(doc(db, 'conversations', chatId), {
-            deletedFor: arrayRemove(user.uid),
-            [`resetAt_${user.uid}`]: Timestamp.now(),
-            updatedAt: Timestamp.now(),
-          });
-          // Update chatResets state so the messages listener filters old messages
-          setChatResetTimestamps(prev => ({ ...prev, [chatId]: Timestamp.now() }));
-          setSelectedChatId(chatId);
-          setShowNewChat(false);
-          return;
+      try {
+        const chatDoc = await getDoc(doc(db, 'conversations', chatId));
+        if (chatDoc.exists()) {
+          const chatData = chatDoc.data();
+          if (chatData.deletedFor?.includes(user.uid)) {
+            // Previously deleted — set a fresh resetAt timestamp so old messages are filtered out
+            console.log("conversation creation debug log: Re-adding deleted chat — setting fresh resetAt", chatId);
+            // Remove user from deletedFor and set reset timestamp for fresh start
+            await updateDoc(doc(db, 'conversations', chatId), {
+              deletedFor: arrayRemove(user.uid),
+              [`resetAt_${user.uid}`]: Timestamp.now(),
+              updatedAt: Timestamp.now(),
+            });
+            // Update chatResets state so the messages listener filters old messages
+            setChatResetTimestamps(prev => ({ ...prev, [chatId]: Timestamp.now() }));
+            setSelectedChatId(chatId);
+            setShowNewChat(false);
+            return;
+          }
         }
+      } catch (probeError: any) {
+        // An existence probe on a missing document can be denied by rules that
+        // inspect resource.data. Treat that as "not present" and continue to
+        // create; the create call below is still governed by its own rule.
+        if (probeError?.code !== 'permission-denied') throw probeError;
+        console.warn('Conversation existence probe denied; continuing to create', probeError);
       }
 
       console.log("conversation creation debug log: Creating new chat with", targetUid);
@@ -5255,51 +5303,14 @@ export default function App() {
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                           )} 
                           title="Send Document"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            showComingSoonNotice('File transfer');
-                          }}
                         >
-                          <span className="absolute -top-2 -right-3 z-10">
-                            <ComingSoonBadge compact />
-                          </span>
                           <Paperclip className="w-5 h-5" />
-                          <input type="file" accept="application/pdf,text/*" className="hidden" disabled onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            if (file) {
-                              if (file.type.startsWith('image/')) {
-                                const base64 = await new Promise<string>((resolve, reject) => {
-                                  const reader = new FileReader();
-                                  reader.onloadend = () => resolve(reader.result as string);
-                                  reader.onerror = reject;
-                                  reader.readAsDataURL(file);
-                                });
-                                const imageForFirestore = base64.length > 520_000 ? await resizeImage(base64) : base64;
-                                if (imageForFirestore.length > 700_000) {
-                                  alert("This image is too large for free encrypted sending. Please choose a smaller image or screenshot.");
-                                  e.target.value = '';
-                                  return;
-                                }
-                                setSelectedImage(imageForFirestore);
-                                setSelectedFile(null);
-                                e.target.value = '';
-                                return;
-                              }
-                              if (file.size > 10 * 1024 * 1024) {
-                                alert("File size must be less than 10MB for secure transmission.");
-                                e.target.value = '';
-                                return;
-                              }
-                              setSelectedImage(null);
-                              setSelectedFile({
-                                name: file.name,
-                                size: file.size,
-                                date: new Date().toLocaleDateString(),
-                                file: file
-                              });
-                              e.target.value = '';
-                            }
-                          }} />
+                          <input
+                            type="file"
+                            accept="application/pdf,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.txt,.md,.csv,.json,.xml,.html,.log,.yml,.yaml,text/*"
+                            className="hidden"
+                            onChange={handleDocumentSelect}
+                          />
                         </label>
                         <button 
                           type="button" 

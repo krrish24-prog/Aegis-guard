@@ -808,20 +808,21 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
          - PASS: Normal text, valid/contextual E2EE (standard length, structure), short base64/hex blocks.
          - FLAG: Recursive encoding (e.g., base64 inside URL-encoded string), obfuscated code injection, non-standard high-entropy patterns that do NOT match common E2EE protocols.
       3. PHISHING: Flag malicious links/domains and deceit context.
-      4. DOCUMENTS (PDFs): If analyzing a PDF, look for embedded scripts, phishing links, malicious macros, or deceptive content. Say whether the document is safe.
+      4. DOCUMENTS (PDF, Office, text): Judge the attachment from the extracted text when it is supplied. Flag embedded scripts, macros, phishing links, deceptive instructions, or hidden content, and say whether the document is safe. If no text could be extracted, say extraction was unavailable and judge only by the file metadata instead of inventing content.
       5. SCORE: 0(Critical)-100(Safe). A normal photo, screenshot, or icon with no visible threat must be isSafe true and score 90-100.
       6. EXPLAIN: BRIEF.`;
 
       const safeContent = cleanText(content, 6_000);
       const mimeType = cleanText(fileDataInfo?.mimeType, 100);
+      const attachmentData = typeof fileDataInfo?.data === "string" ? fileDataInfo.data : "";
       const attachmentText =
-        mimeType === "application/pdf"
-          ? cleanText(fileDataInfo?.data, 12_000)
+        attachmentData && !attachmentData.startsWith("data:")
+          ? cleanText(attachmentData, 12_000)
           : "";
       const userPrompt = `Analyze this message. Hash ID: ${cleanText(contentHash, 100)}
       ${safeContent ? `Message: "${safeContent}"` : 'Message for file/image analysis.'}
       ${fileDataInfo ? `An attachment is present (${mimeType || "unknown type"}).` : ''}
-      ${attachmentText ? `Extracted PDF text:\n${attachmentText}` : ''}
+      ${attachmentText ? `Extracted attachment content:\n${attachmentText}` : ''}
       
       Respond as JSON with these fields: isSafe (boolean), score (0-100), threatType (string), summary (string), points (array of strings), steganographyReport (string)`;
 
