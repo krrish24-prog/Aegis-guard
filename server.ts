@@ -7,6 +7,16 @@ import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { requireFirebaseAuth, type AuthenticatedRequest } from "./server/authMiddleware";
+import {
+  b2ObjectUrl,
+  buildB2ObjectKey,
+  createPresignedGetUrl,
+  deleteB2Object,
+  getB2Config,
+  getB2Object,
+  probeB2,
+  putB2Object,
+} from "./server/b2Storage";
 
 const envBasePath = path.resolve(process.cwd(), ".env");
 const envLocalPath = path.resolve(process.cwd(), ".env.local");
@@ -16,9 +26,10 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const FALLBACK_NVIDIA_MODEL = "moonshotai/kimi-k3";
+const FALLBACK_NVIDIA_MODEL = "google/diffusiongemma-26b-a4b-it";
 const RETIRED_NVIDIA_MODELS = new Map([
   ["meta/llama-3.1-8b-instruct", FALLBACK_NVIDIA_MODEL],
+  ["moonshotai/kimi-k3", FALLBACK_NVIDIA_MODEL],
 ]);
 
 const resolveNvidiaModel = (model = process.env.NVIDIA_MODEL || FALLBACK_NVIDIA_MODEL) => {
@@ -27,6 +38,14 @@ const resolveNvidiaModel = (model = process.env.NVIDIA_MODEL || FALLBACK_NVIDIA_
 };
 
 const DEFAULT_NVIDIA_MODEL = resolveNvidiaModel();
+const FALLBACK_NVIDIA_VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b";
+
+const resolveNvidiaVisionModel = (
+  model = process.env.NVIDIA_VISION_MODEL || FALLBACK_NVIDIA_VISION_MODEL
+) => {
+  const normalized = model.trim();
+  return RETIRED_NVIDIA_MODELS.get(normalized) || normalized || FALLBACK_NVIDIA_VISION_MODEL;
+};
 
 const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwrite.io/v1").replace(/\/$/, "");
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
@@ -148,6 +167,7 @@ async function startServer() {
   app.use("/api/storage/status", apiLimiter);
   app.use("/api/storage/upload", apiLimiter);
   app.use("/api/storage/write-test", apiLimiter);
+  app.use("/api/storage/b2", apiLimiter);
   app.use("/api/storage/files/:fileId/download", apiLimiter);
   app.use("/api/meet/create", apiLimiter);
   app.use("/api/security-assistant", aiLimiter);
@@ -160,7 +180,9 @@ async function startServer() {
 
   app.use(express.json({ limit: "70mb" }));
   app.use("/api", (req, res, next) => {
-    if (req.path === "/storage/status") return next();
+    // The health check is public, including when opened with a trailing slash.
+    const apiPath = req.path.replace(/\/+$/, "") || "/";
+    if (apiPath === "/storage/status") return next();
     return requireFirebaseAuth(req as AuthenticatedRequest, res, next);
   });
 
@@ -311,42 +333,82 @@ async function startServer() {
   };
 
   app.get("/api/storage/status", async (_req: AuthenticatedRequest, res) => {
-    try {
-      if (!isAppwriteConfigured()) {
-        return res.status(503).json({
-          ok: false,
+    const b2Config = getB2Config();
+    const b2Status = b2Config
+      ? await probeB2(b2Config)
+          .then((result) => ({ configured: true, ...result }))
+          .catch((error: any) => ({
+            configured: true,
+            ok: false,
+            bucket: b2Config.bucketName,
+            region: b2Config.region,
+            endpoint: b2Config.endpoint,
+            error: error.message || "B2 status check failed",
+          }))
+      : {
           configured: false,
+          ok: false,
           missing: {
-            APPWRITE_PROJECT_ID: !APPWRITE_PROJECT_ID,
-            APPWRITE_API_KEY: !APPWRITE_API_KEY,
-            APPWRITE_BUCKET_ID: !APPWRITE_BUCKET_ID,
+            B2_KEY_ID: !process.env.B2_KEY_ID,
+            B2_APPLICATION_KEY: !process.env.B2_APPLICATION_KEY,
+            B2_BUCKET_NAME: !process.env.B2_BUCKET_NAME,
+            B2_REGION: !process.env.B2_REGION,
           },
-        });
-      }
+        };
 
-      const { response, endpoint } = await fetchAppwrite(`/storage/buckets/${APPWRITE_BUCKET_ID}`);
-      const text = await response.text();
-      let details: unknown = text;
+    let appwriteOk = false;
+    let appwriteStatus: Record<string, unknown> = {
+      configured: false,
+      ok: false,
+      missing: {
+        APPWRITE_PROJECT_ID: !APPWRITE_PROJECT_ID,
+        APPWRITE_API_KEY: !APPWRITE_API_KEY,
+        APPWRITE_BUCKET_ID: !APPWRITE_BUCKET_ID,
+      },
+    };
+    if (isAppwriteConfigured()) {
       try {
-        details = text ? JSON.parse(text) : null;
-      } catch {
-        details = text || null;
+        const { response, endpoint } = await fetchAppwrite(`/storage/buckets/${APPWRITE_BUCKET_ID}`);
+        const text = await response.text();
+        let details: unknown = text;
+        try {
+          details = text ? JSON.parse(text) : null;
+        } catch {
+          details = text || null;
+        }
+        appwriteOk = response.ok;
+        appwriteStatus = {
+          configured: true,
+          ok: response.ok,
+          endpoint,
+          bucketId: APPWRITE_BUCKET_ID,
+          details,
+        };
+      } catch (error: any) {
+        appwriteStatus = {
+          configured: true,
+          ok: false,
+          error: error.message || "Appwrite status failed",
+        };
       }
-      res.status(response.ok ? 200 : response.status).json({
-        ok: response.ok,
-        endpoint,
-        bucketId: APPWRITE_BUCKET_ID,
-        details,
-      });
-    } catch (error: any) {
-      res.status(500).json({ ok: false, error: error.message || "Storage status failed" });
     }
+
+    const ok = Boolean(b2Status.ok || appwriteOk);
+    res.status(ok ? 200 : 503).json({
+      ok,
+      preferred: b2Status.ok ? "b2" : appwriteOk ? "appwrite" : null,
+      b2: b2Status,
+      appwrite: appwriteStatus,
+    });
   });
 
   app.post("/api/storage/upload", async (req: AuthenticatedRequest, res) => {
     try {
-      if (!isAppwriteConfigured()) {
-        return res.status(503).json({ error: "Appwrite storage is not configured on the server." });
+      const b2Config = getB2Config();
+      if (!b2Config && !isAppwriteConfigured()) {
+        return res.status(503).json({
+          error: "Media storage is not configured on the server. Set the B2_* environment variables.",
+        });
       }
 
       const encryptedBase64 = typeof req.body?.encryptedBase64 === "string" ? req.body.encryptedBase64 : "";
@@ -355,11 +417,39 @@ async function startServer() {
       }
 
       const encryptedBytes = Buffer.from(encryptedBase64, "base64");
+      if (encryptedBytes.byteLength === 0) {
+        return res.status(400).json({ error: "Encrypted file data is empty." });
+      }
       if (encryptedBytes.byteLength > 50 * 1024 * 1024) {
-        return res.status(413).json({ error: "Encrypted file is larger than Appwrite free bucket limit." });
+        return res.status(413).json({ error: "Encrypted file is larger than the 50 MB upload limit." });
       }
 
       const fileName = cleanFileName(req.body?.fileName);
+      const purpose = req.body?.purpose === "status" ? "status" : "media";
+      const requestedContentType = typeof req.body?.contentType === "string" ? req.body.contentType : "";
+      // Status media is displayed directly, so keep its real image/video type.
+      // Chat media is encrypted and intentionally stays application/octet-stream.
+      const contentType = purpose === "status" && /^(image|video)\/[A-Za-z0-9.+-]+$/.test(requestedContentType)
+        ? requestedContentType
+        : "application/octet-stream";
+
+      if (b2Config) {
+        const key = buildB2ObjectKey(purpose, req.firebaseUser?.uid || "unknown", fileName);
+        await putB2Object(b2Config, key, encryptedBytes, contentType);
+        // Status media is rendered directly by <img>/<video>, so it needs a temporary
+        // direct URL. Chat media keeps a stable same-origin URL so old messages stay readable.
+        const fileUrl = purpose === "status"
+          ? createPresignedGetUrl(b2Config, b2ObjectUrl(b2Config, key))
+          : `/api/storage/b2/${key}`;
+        return res.json({
+          provider: "b2",
+          key,
+          fileUrl,
+          ...(purpose === "status" ? { expiresInSeconds: 7 * 24 * 60 * 60 } : {}),
+        });
+      }
+
+      // Legacy Appwrite fallback for deployments that have not set B2_* yet.
       const form = new FormData();
       form.append("fileId", "unique()");
       form.append("file", new Blob([encryptedBytes], { type: "application/octet-stream" }), fileName);
@@ -376,22 +466,71 @@ async function startServer() {
 
       const uploaded = JSON.parse(text);
       res.json({
+        provider: "appwrite",
         fileId: uploaded.$id,
         fileUrl: `/api/storage/files/${uploaded.$id}/download`,
       });
     } catch (error: any) {
-      console.error("Appwrite upload error:", error);
-      res.status(500).json({ error: error.message || "Upload failed" });
+      console.error("Media upload error:", error);
+      const status = typeof error?.status === "number" && error.status >= 400 && error.status < 500
+        ? error.status
+        : 500;
+      res.status(status).json({ error: error.message || "Upload failed" });
+    }
+  });
+
+  app.get("/api/storage/b2/*", async (req: AuthenticatedRequest, res) => {
+    try {
+      const b2Config = getB2Config();
+      if (!b2Config) {
+        return res.status(503).json({ error: "Backblaze B2 storage is not configured on the server." });
+      }
+
+      const key = String(req.params[0] || "").replace(/^\/+/, "");
+      if (!key || key.length > 512 || key.includes("..") || !/^[A-Za-z0-9._\/-]+$/.test(key)) {
+        return res.status(400).json({ error: "Invalid storage key." });
+      }
+
+      const object = await getB2Object(b2Config, key);
+      res.setHeader("Content-Type", object.contentType || "application/octet-stream");
+      res.setHeader("Content-Length", String(object.body.byteLength));
+      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(object.body);
+    } catch (error: any) {
+      if (error?.status === 404) {
+        return res.status(404).json({ error: "File not found." });
+      }
+      const status = typeof error?.status === "number" && error.status >= 400 && error.status < 500
+        ? error.status
+        : 500;
+      console.error("B2 download error:", error);
+      res.status(status).json({ error: error.message || "Download failed" });
     }
   });
 
   app.post("/api/storage/write-test", async (req: AuthenticatedRequest, res) => {
     try {
+      const b2Config = getB2Config();
+      const probe = Buffer.from(`aegis-write-test:${Date.now()}:${crypto.randomUUID()}`, "utf8");
+
+      if (b2Config) {
+        const key = buildB2ObjectKey("media", req.firebaseUser?.uid || "unknown", "aegis-write-test.txt");
+        await putB2Object(b2Config, key, probe, "text/plain");
+        await deleteB2Object(b2Config, key).catch(() => null);
+        return res.json({
+          ok: true,
+          provider: "b2",
+          bucket: b2Config.bucketName,
+          region: b2Config.region,
+          key,
+        });
+      }
+
       if (!isAppwriteConfigured()) {
         return res.status(503).json({ ok: false, error: "Appwrite storage is not configured on the server." });
       }
 
-      const probe = Buffer.from(`aegis-write-test:${Date.now()}:${crypto.randomUUID()}`, "utf8");
       const form = new FormData();
       form.append("fileId", "unique()");
       form.append("file", new Blob([probe], { type: "text/plain" }), "aegis-write-test.txt");
@@ -407,9 +546,9 @@ async function startServer() {
 
       const uploaded = JSON.parse(uploadText);
       await fetchAppwrite(`/storage/buckets/${APPWRITE_BUCKET_ID}/files/${uploaded.$id}`, { method: "DELETE" }).catch(() => null);
-      res.json({ ok: true, endpoint, bucketId: APPWRITE_BUCKET_ID, fileId: uploaded.$id });
+      res.json({ ok: true, provider: "appwrite", endpoint, bucketId: APPWRITE_BUCKET_ID, fileId: uploaded.$id });
     } catch (error: any) {
-      console.error("Appwrite write test error:", error);
+      console.error("Storage write test error:", error);
       res.status(500).json({ ok: false, error: error.message || "Write test failed" });
     }
   });
@@ -460,6 +599,7 @@ async function startServer() {
     messages: AiMessage[];
     stream?: boolean;
     maxTokens?: number;
+    model?: string;
   }) => {
     const aiClient = getAIClient();
     if (!aiClient || aiClient.type !== "nvidia") {
@@ -473,7 +613,7 @@ async function startServer() {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: aiClient.model,
+        model: params.model || aiClient.model,
         messages: params.messages,
         temperature: 0.0,
         max_tokens: params.maxTokens || DEFAULT_MAX_TOKENS,
@@ -502,6 +642,21 @@ async function startServer() {
     stream?: boolean;
     maxTokens?: number;
   }) => {
+    const hasImage = params.messages.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === "image_url")
+    );
+
+    if (hasImage) {
+      return createNvidiaCompletion({
+        ...params,
+        model: resolveNvidiaVisionModel(),
+        // Vision models can spend tokens on reasoning before returning the JSON answer.
+        maxTokens: Math.max(params.maxTokens || 0, 900),
+      });
+    }
+
     return createNvidiaCompletion(params);
   };
 
@@ -648,13 +803,13 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
       
       const systemPrompt = `You are a Cybersecurity Analyst. Respond with MINIMAL JSON.
 
-      1. STEGANOGRAPHY (Images): Look for LSB manipulation or spectral noise signaling hidden payloads. Extract, decode, and put result in 'steganographyReport'.
+      1. STEGANOGRAPHY (Images): Report hidden-payload evidence only when it is clearly visible. Do not invent payloads, hidden text, or LSB artifacts you cannot observe. If there is no evidence, set 'steganographyReport' to "No hidden payload detected".
       2. CRYPTOGRAPHY:
          - PASS: Normal text, valid/contextual E2EE (standard length, structure), short base64/hex blocks.
          - FLAG: Recursive encoding (e.g., base64 inside URL-encoded string), obfuscated code injection, non-standard high-entropy patterns that do NOT match common E2EE protocols.
       3. PHISHING: Flag malicious links/domains and deceit context.
       4. DOCUMENTS (PDFs): If analyzing a PDF, look for embedded scripts, phishing links, malicious macros, or deceptive content. Say whether the document is safe.
-      5. SCORE: 0(Critical)-100(Safe).
+      5. SCORE: 0(Critical)-100(Safe). A normal photo, screenshot, or icon with no visible threat must be isSafe true and score 90-100.
       6. EXPLAIN: BRIEF.`;
 
       const safeContent = cleanText(content, 6_000);

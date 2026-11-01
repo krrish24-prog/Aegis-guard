@@ -141,7 +141,7 @@ export async function decryptMessageMedia(
     }
   }
 
-  // E2EE files in Firebase Storage
+  // E2EE files in remote storage (B2 or legacy Firebase/Appwrite)
   if (!decryptedFileData && isRemoteEncryptedUrl(m.fileUrl) && dataKey && m.fileDataIv) {
     try {
       const b64 = await EncryptionService.decryptFileUrl(m.fileUrl, dataKey, m.fileDataIv, privateKey);

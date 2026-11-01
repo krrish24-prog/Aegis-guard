@@ -1,7 +1,7 @@
-import { db, storage } from '../firebase';
+import { db } from '../firebase';
 import { doc, updateDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { EncryptionService } from './encryptionService';
+import { uploadMediaToSecureStorage } from './mediaStorageService';
 import type { VoiceMessageMeta } from '../types';
 import { isSystemParticipant } from '../utils/participants';
 
@@ -102,15 +102,11 @@ export class VoiceMessageService {
     duration: number,
     encryptedBuffer?: ArrayBuffer
   ): Promise<{ fileUrl: string; voiceMeta: VoiceMessageMeta }> {
-    const storageRef = ref(storage, `conversations/${chatId}/voice/${Date.now()}_${messageId}.webm`);
     const data = encryptedBuffer ? new Blob([encryptedBuffer]) : audioBlob;
-
-    const uploadTask = uploadBytesResumable(storageRef, data);
-    await new Promise<void>((resolve, reject) => {
-      uploadTask.on('state_changed', null, reject, () => resolve());
+    const { fileUrl } = await uploadMediaToSecureStorage(data, {
+      fileName: `voice-${chatId}-${messageId}.webm`,
+      purpose: 'media',
     });
-
-    const fileUrl = await getDownloadURL(uploadTask.snapshot.ref);
     const voiceMeta: VoiceMessageMeta = {
       duration,
       mimeType: 'audio/webm',

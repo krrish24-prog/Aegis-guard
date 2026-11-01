@@ -1,13 +1,14 @@
 import type { Request, Response, NextFunction } from 'express';
-import admin from 'firebase-admin';
+import { getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth, type DecodedIdToken } from 'firebase-admin/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 
-if (!admin.apps.length) {
-  admin.initializeApp({ projectId: firebaseConfig.projectId });
+if (!getApps().length) {
+  initializeApp({ projectId: firebaseConfig.projectId });
 }
 
 export interface AuthenticatedRequest extends Request {
-  firebaseUser?: admin.auth.DecodedIdToken;
+  firebaseUser?: DecodedIdToken;
 }
 
 export async function requireFirebaseAuth(
@@ -22,7 +23,7 @@ export async function requireFirebaseAuth(
   }
   try {
     const token = authHeader.slice(7);
-    req.firebaseUser = await admin.auth().verifyIdToken(token);
+    req.firebaseUser = await getAuth().verifyIdToken(token);
     next();
   } catch {
     res.status(401).json({ error: 'Unauthorized: invalid token' });

@@ -13,10 +13,20 @@ services:
         value: https://integrate.api.nvidia.com/v1/chat/completions
       - key: NVIDIA_MODEL
         value: google/diffusiongemma-26b-a4b-it
+      - key: NVIDIA_VISION_MODEL
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
       - key: AI_MAX_TOKENS
         value: "650"
       - key: NVIDIA_API_KEY
         sync: false
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APPLICATION_KEY
+        sync: false
+      - key: B2_BUCKET_NAME
+        value: aegis-guard-media
+      - key: B2_REGION
+        value: us-west-004
       - key: APPWRITE_ENDPOINT
         value: https://fra.cloud.appwrite.io/v1
       - key: APPWRITE_PROJECT_ID

@@ -7,7 +7,6 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   auth, 
   db, 
-  storage,
   OperationType, 
   handleFirestoreError 
 } from './firebase';
@@ -40,13 +39,6 @@ import {
   arrayUnion,
   arrayRemove
 } from 'firebase/firestore';
-import { 
-  ref, 
-  uploadBytes, 
-  getDownloadURL,
-  uploadBytesResumable,
-  uploadString
-} from 'firebase/storage';
 import { 
   Mail,
   Bookmark,
@@ -134,6 +126,7 @@ import { WebRTCService } from './services/webrtcService';
 import { VoiceMessageService } from './services/voiceMessageService';
 import { AdminService } from './services/adminService';
 import { authenticatedFetch } from './services/apiClient';
+import { uploadMediaToSecureStorage, arrayBufferToBase64 } from './services/mediaStorageService';
 import { normalizeParticipantList } from './utils/participants';
 import SecurityDashboard from './components/SecurityDashboard';
 import AdminDashboard from './components/AdminDashboard';
@@ -702,8 +695,6 @@ export default function App() {
 
     const performUpload = async () => {
       try {
-        const storageRef = ref(storage, `status/${user.uid}/${Date.now()}_${file.name}`);
-        
         let blobData: Blob = file;
         if (!isVideo) {
             try {
@@ -728,10 +719,11 @@ export default function App() {
             }
         }
 
-        const uploadPromise = uploadBytes(storageRef, blobData);
-        const uploadSnap = await uploadPromise;
-        
-        const mediaUrl = await getDownloadURL(uploadSnap.ref);
+        const { fileUrl: mediaUrl } = await uploadMediaToSecureStorage(blobData, {
+            fileName: file.name,
+            purpose: 'status',
+            contentType: blobData.type || file.type,
+        });
 
         const actualId = tempId.replace('temp_', 'status_'); // just a unique ID
         const statusRef = doc(collection(db, 'status_updates'), actualId);
@@ -780,10 +772,8 @@ export default function App() {
 
       } catch (error: any) {
         setLocalStatusUpdates(prev => prev.filter(s => s.id !== tempId));
-        if (error.code !== 'storage/canceled') {
-          console.error("Status upload failed:", error);
-          alert("Status upload failed: " + (error.message || 'Unknown error'));
-        }
+        console.error("Status upload failed:", error);
+        alert("Status upload failed: " + (error.message || 'Unknown error'));
       }
     };
     
@@ -3053,7 +3043,7 @@ export default function App() {
           const encryptedImage = await EncryptionService.encryptBinaryWithSessionKeys(imgEncoded, mediaRecipients);
           imgEncrypted = encryptedImage.encrypted;
           imgEncryptedInline = btoa(EncryptionService.ab2str(imgEncrypted));
-          imageRef = imgEncryptedInline.length < 850_000 ? null : { provider: 'appwrite', fileName: `encrypted-image-${Date.now()}.bin` };
+          imageRef = imgEncryptedInline.length < 850_000 ? null : { provider: 'storage', fileName: `encrypted-image-${Date.now()}.bin` };
           msgData.imageUrl = imageRef ? 'uploading...' : imgEncryptedInline;
           msgData.encryptedImageSessionKeys = encryptedImage.sessionKeys;
           msgData.imageIv = encryptedImage.iv;
@@ -3062,7 +3052,7 @@ export default function App() {
         } else {
           imgEncrypted = imgEncoded;
           imgEncryptedInline = btoa(EncryptionService.ab2str(imgEncrypted));
-          imageRef = imgEncryptedInline.length < 850_000 ? null : { provider: 'appwrite', fileName: `image-${Date.now()}.bin` };
+          imageRef = imgEncryptedInline.length < 850_000 ? null : { provider: 'storage', fileName: `image-${Date.now()}.bin` };
           msgData.imageUrl = imageRef ? 'uploading...' : imgEncryptedInline;
           msgData.encryptedImageSessionKeys = {};
           msgData.imageIv = "";
@@ -3216,16 +3206,6 @@ export default function App() {
           let finalFileNameIv = '';
           let finalFileDataIv = '';
 
-          const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-            const bytes = new Uint8Array(buffer);
-            let binary = '';
-            const chunkSize = 0x8000;
-            for (let i = 0; i < bytes.length; i += chunkSize) {
-              binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-            }
-            return btoa(binary);
-          };
-
           if (fileToUse) {
              const fileNameIv = window.crypto.getRandomValues(new Uint8Array(12));
              const fileDataIv = window.crypto.getRandomValues(new Uint8Array(12));
@@ -3247,7 +3227,7 @@ export default function App() {
                fileDataEncrypted = encryptedFile.encrypted;
                const encryptedFileInline = arrayBufferToBase64(fileDataEncrypted);
                const canSendInline = encryptedFileInline.length < 850_000;
-               fileRef = canSendInline ? null : { provider: 'appwrite', fileName: fileToUse.name };
+               fileRef = canSendInline ? null : { provider: 'storage', fileName: fileToUse.name };
                
                const fileNameEncoded = new TextEncoder().encode(fileToUse.name);
                const encryptedName = await EncryptionService.encryptBinaryWithSessionKeys(fileNameEncoded, mediaRecipients);
@@ -3269,7 +3249,7 @@ export default function App() {
                fileDataEncrypted = fileDataEncoded; // Just use plaintext buffer
                const plainFileInline = arrayBufferToBase64(fileDataEncrypted);
                const canSendInline = plainFileInline.length < 850_000;
-               fileRef = canSendInline ? null : { provider: 'appwrite', fileName: fileToUse.name };
+               fileRef = canSendInline ? null : { provider: 'storage', fileName: fileToUse.name };
                
                updates.fileName = btoa(EncryptionService.ab2str(new TextEncoder().encode(fileToUse.name)));
                updates.encryptedFileNameSessionKeys = {};
@@ -3285,33 +3265,20 @@ export default function App() {
           }
 
           const uploadWithProgress = async (refPath: any, data: ArrayBuffer): Promise<string> => {
-            console.log("Starting Appwrite encrypted upload for:", refPath?.fileName || 'encrypted-file');
+            console.log("Starting secure media upload for:", refPath?.fileName || 'encrypted-file');
             setUploadProgressRecord(prev => ({ ...prev, [msgRef.id]: 10 }));
-            const res = await authenticatedFetch('/api/storage/upload', {
-              method: 'POST',
-              body: JSON.stringify({
+            try {
+              const payload = await uploadMediaToSecureStorage(data, {
                 fileName: refPath?.fileName || 'encrypted-file.bin',
-                encryptedBase64: arrayBufferToBase64(data),
-              }),
-            });
-
-            if (!res.ok) {
-              const text = await res.text();
+                purpose: 'media',
+              });
+              setUploadProgressRecord(prev => ({ ...prev, [msgRef.id]: 100 }));
+              return payload.fileUrl;
+            } catch (error: any) {
               setUploadProgressRecord(prev => ({ ...prev, [msgRef.id]: 0 }));
               setMessages(prev => prev.map(m => m.id === msgRef.id ? { ...m, status: 'error' } : m));
-              let message = 'Encrypted upload failed';
-              try {
-                const parsed = JSON.parse(text);
-                message = parsed.error || parsed.details || message;
-              } catch {
-                message = text || message;
-              }
-              throw new Error(message);
+              throw error;
             }
-
-            const payload = await res.json();
-            setUploadProgressRecord(prev => ({ ...prev, [msgRef.id]: 100 }));
-            return payload.fileUrl;
           };
           const encryptAndUpload = async () => {
              if (imageRef && imgEncrypted) {
@@ -3443,6 +3410,8 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     }
+    // Allow selecting the same file again.
+    e.target.value = '';
   };
 
   const getOtherParticipantIdentifier = (chat: Chat) => {
@@ -5274,16 +5243,9 @@ export default function App() {
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
                       title="Send Image"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        showComingSoonNotice('Photo transfer');
-                      }}
                     >
-                      <span className="absolute -top-2 -right-3 z-10">
-                        <ComingSoonBadge compact />
-                      </span>
                       <ImageIcon className="w-5 h-5" />
-                      <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} disabled />
+                      <input type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
                     </label>
                     {selectedChat?.type !== 'ai' && (
                       <>
@@ -8149,7 +8111,7 @@ export default function App() {
                   <div className="p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
                     <Info className="w-5 h-5 text-zinc-400 mb-2" />
                     <h4 className="text-xs font-bold uppercase mb-1 text-zinc-900">Detection Engine</h4>
-                    <p className="text-[10px] text-zinc-500">Powered by Gemini 3 Flash with real-time heuristic & multimodal analysis.</p>
+                    <p className="text-[10px] text-zinc-500">Powered by NVIDIA Nemotron with real-time heuristic & multimodal analysis.</p>
                   </div>
                 </div>
               </div>

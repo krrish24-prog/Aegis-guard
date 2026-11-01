@@ -26,7 +26,6 @@ import {
   getDocFromServer,
   initializeFirestore
 } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
 import firebaseConfigRaw from '../firebase-applet-config.json';
 
 // Provide a fallback empty config to prevent hard crashes if json is empty
@@ -44,7 +43,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export { app };
 export const auth = getAuth(app);
-export const storage = getStorage(app);
 
 // Use the existing AI Studio Firestore database so free-tier projects do not need to create `(default)`.
 export const db = initializeFirestore(app, {
