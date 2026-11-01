@@ -17,7 +17,8 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  deleteUser
+  deleteUser,
+  updateProfile as updateAuthUserProfile
 } from 'firebase/auth';
 import { 
   collection, 
@@ -118,6 +119,8 @@ import { syncReciprocalContacts } from './services/googleContactService';
 import { DeviceService } from './services/deviceService';
 import { SessionService } from './services/sessionService';
 import { KeyManagementService } from './services/keyManagementService';
+import { downloadDecryptedFile, saveBlob, base64ToBlob } from './services/fileDownloadService';
+import { loadVaultFiles, addVaultFile, readVaultFile, deleteVaultFile, VAULT_MAX_BYTES, VaultFile } from './services/vaultService';
 import { ThreatIntelligenceService } from './services/threatIntelligenceService';
 import { decryptMessageMedia, buildFileDataInfo } from './services/messageMediaService';
 import { analyzeDecryptedMessage } from './services/messageAnalysisService';
@@ -157,6 +160,28 @@ const ComingSoonBadge = ({ compact = false }: { compact?: boolean }) => (
 
 const showComingSoonNotice = (feature: string) => {
   alert(`${feature} is coming soon. This option is currently locked until the full feature is ready.`);
+};
+
+// Profile completion is remembered per account so the "Complete Your Profile"
+// dialog only ever appears once, even after a refresh or a re-login.
+const profileDoneKey = (uid: string) => `aegis_profile_completed_${uid}`;
+const isPlaceholderName = (name?: string | null) => {
+  const trimmed = (name || '').trim();
+  return trimmed.length === 0 || ['Anonymous', 'User'].includes(trimmed);
+};
+const markProfileComplete = (uid: string) => {
+  try {
+    localStorage.setItem(profileDoneKey(uid), '1');
+  } catch {
+    // localStorage can be unavailable in private mode; Firestore still tracks it.
+  }
+};
+const hasCompletedProfileLocally = (uid: string) => {
+  try {
+    return localStorage.getItem(profileDoneKey(uid)) === '1';
+  } catch {
+    return false;
+  }
 };
 
 // --- Types ---
@@ -1168,7 +1193,9 @@ export default function App() {
     lastSeen: true,
     selfDestruct: 0 // 0 means off, otherwise seconds
   });
-  const [secureFiles, setSecureFiles] = useState<{name: string, size: number, date: string}[]>([]);
+  const [vaultFiles, setVaultFiles] = useState<VaultFile[]>([]);
+  const [vaultLoading, setVaultLoading] = useState(false);
+  const [vaultBusy, setVaultBusy] = useState<string | null>(null);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
   const [showScheduleModal, setShowScheduleModal] = useState<'call' | 'meeting' | null>(null);
   const [scheduleTitle, setScheduleTitle] = useState('');
@@ -1745,29 +1772,46 @@ export default function App() {
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
 
-              if (!publicData.displayName || ['Anonymous', 'User'].includes(String(publicData.displayName))) {
-                setEditDisplayName(u.displayName || '');
-                setEditPhoneNumber(String(privateData.phoneNumber || ''));
-                setEditStatus(String(publicData.status || 'Hey there! I am using Aegis.'));
-                setShowCompleteProfile(true);
+              // The profile dialog is only for accounts that have never saved a
+              // display name. Once a name exists (or the account was previously
+              // completed), refreshing or re-logging in must not ask again.
+              if (isPlaceholderName(publicData.displayName)) {
+                const completedBefore = publicData.profileCompleted === true
+                  || hasCompletedProfileLocally(u.uid);
+                if (completedBefore) {
+                  markProfileComplete(u.uid);
+                } else {
+                  setEditDisplayName((u.displayName || '').trim());
+                  setEditPhoneNumber(String(privateData.phoneNumber || ''));
+                  setEditStatus(String(publicData.status || 'Hey there! I am using Aegis.'));
+                  setShowCompleteProfile(true);
+                }
+              } else {
+                markProfileComplete(u.uid);
               }
             } else {
               const keys = await EncryptionService.getOrCreateKeyPair(u.uid);
               const email = u.email?.toLowerCase() || '';
               const newPrivateProfile = { uid: u.uid, email };
+              const authName = (u.displayName || '').trim();
               const newPublicProfile = {
-                uid: u.uid, email, displayName: u.displayName || 'Anonymous',
+                uid: u.uid, email, displayName: isPlaceholderName(authName) ? 'Anonymous' : authName,
                 photoURL: u.photoURL || '', online: true, publicKey: keys.publicKey,
+                profileCompleted: !isPlaceholderName(authName),
               };
               await Promise.all([
                 setDoc(doc(db, 'users', u.uid), newPrivateProfile),
                 setDoc(doc(db, 'users_public', u.uid), newPublicProfile),
               ]);
               setProfile({ ...newPublicProfile, ...newPrivateProfile } as UserProfile);
-              setEditDisplayName(u.displayName || '');
+              setEditDisplayName(authName);
               setEditPhoneNumber('');
               setEditStatus('Hey there! I am using Aegis.');
-              setShowCompleteProfile(true);
+              if (isPlaceholderName(authName) && !hasCompletedProfileLocally(u.uid)) {
+                setShowCompleteProfile(true);
+              } else {
+                markProfileComplete(u.uid);
+              }
 
               try {
                 const keyMeta = await KeyManagementService.getOrCreateKeys(u.uid);
@@ -1779,31 +1823,51 @@ export default function App() {
               }
 
               AdminService.hasAdminClaim(u).then(setIsUserAdmin);
-              setShowCompleteProfile(true);
             }
           } catch (error: any) {
             console.error('Profile fetch error — attempting recovery', error);
             // Don't sign the user out on profile load failure.
             // Instead, attempt to create/recover the profile from Firebase Auth data.
+            // Recovery must never overwrite a display name the user already saved.
             try {
-              const keys = await EncryptionService.getOrCreateKeyPair(u.uid);
               const email = u.email?.toLowerCase() || '';
+              const existingPublicSnap = await getDoc(doc(db, 'users_public', u.uid)).catch(() => null);
+              const existingPublic = (existingPublicSnap?.exists() ? existingPublicSnap.data() : {}) as any;
+              const storedName = typeof existingPublic.displayName === 'string' ? existingPublic.displayName.trim() : '';
+              const authName = (u.displayName || '').trim();
+              const resolvedName = !isPlaceholderName(storedName)
+                ? storedName
+                : (!isPlaceholderName(authName) ? authName : 'Anonymous');
+
+              let publicKey = typeof existingPublic.publicKey === 'string' ? existingPublic.publicKey : '';
+              try {
+                const keys = await EncryptionService.getOrCreateKeyPair(u.uid, publicKey);
+                publicKey = keys.publicKey;
+              } catch (keyError) {
+                console.warn('Key recovery skipped:', keyError);
+              }
+
               const newPrivateProfile = { uid: u.uid, email };
               const newPublicProfile = {
                 uid: u.uid, email,
-                displayName: u.displayName || 'Anonymous',
-                photoURL: u.photoURL || '',
-                online: true, publicKey: keys.publicKey,
+                displayName: resolvedName,
+                photoURL: existingPublic.photoURL || u.photoURL || '',
+                online: true, publicKey,
+                profileCompleted: !isPlaceholderName(resolvedName) || existingPublic.profileCompleted === true,
               };
               await Promise.all([
                 setDoc(doc(db, 'users', u.uid), newPrivateProfile, { merge: true }),
                 setDoc(doc(db, 'users_public', u.uid), newPublicProfile, { merge: true }),
               ]);
               setProfile({ ...newPublicProfile, ...newPrivateProfile } as UserProfile);
-              setEditDisplayName(u.displayName || '');
+              setEditDisplayName(isPlaceholderName(resolvedName) ? '' : resolvedName);
               setEditPhoneNumber('');
               setEditStatus('Hey there! I am using Aegis.');
-              setShowCompleteProfile(true);
+              if (isPlaceholderName(resolvedName) && !hasCompletedProfileLocally(u.uid)) {
+                setShowCompleteProfile(true);
+              } else {
+                markProfileComplete(u.uid);
+              }
               setFirestoreError(null);
             } catch (recoveryError) {
               console.error('Profile recovery failed', recoveryError);
@@ -2268,8 +2332,8 @@ export default function App() {
       }
   };
 
-  const updateProfile = async () => {
-    if (!user || !profile) return;
+  const updateProfile = async (): Promise<boolean> => {
+    if (!user || !profile) return false;
     setIsUpdatingProfile(true);
     try {
       // Normalize phone number for storage
@@ -2287,10 +2351,13 @@ export default function App() {
         photoURL: normalizedPhotoURL
       };
       
+      const trimmedName = editDisplayName.trim();
       const publicUpdate = {
-        displayName: editDisplayName,
+        displayName: trimmedName,
         status: editStatus,
-        photoURL: normalizedPhotoURL
+        photoURL: normalizedPhotoURL,
+        // Remembered in Firestore so a refresh on another device never asks again.
+        profileCompleted: true,
       };
 
       await Promise.all([
@@ -2298,19 +2365,36 @@ export default function App() {
         setDoc(doc(db, 'users_public', user.uid), publicUpdate, { merge: true })
       ]);
 
+      // Keep the Firebase Auth profile in sync so account data matches the app.
+      try {
+        if (auth.currentUser && auth.currentUser.displayName !== trimmedName) {
+          await updateAuthUserProfile(auth.currentUser, { displayName: trimmedName });
+        }
+      } catch (authError) {
+        console.warn('Could not sync display name to Firebase Auth', authError);
+      }
+      markProfileComplete(user.uid);
+
       const updatedProfile = {
         ...profile,
         ...privateUpdate,
         ...publicUpdate
       };
       setProfile(updatedProfile);
+      setEditDisplayName(trimmedName);
       setEditPhotoURL(normalizedPhotoURL);
       setAllUsers(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
       setSyncedContacts(prev => prev.map(u => u.uid === user.uid ? { ...u, ...updatedProfile } : u));
       setShowSettings(false);
       setShowCompleteProfile(false);
+      return true;
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `users/${user.email}`);
+      // Keep the dialog open and say so instead of silently losing the name.
+      if (showCompleteProfile) {
+        alert('Could not save your profile right now. Please check your connection and try again.');
+      }
+      return false;
     } finally {
       setIsUpdatingProfile(false);
     }
@@ -3814,24 +3898,111 @@ export default function App() {
     setShowSettings(false);
   };
 
-  const uploadToVault = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const data = event.target?.result as string;
-        const newFile = {
-          name: file.name,
-          size: file.size,
-          date: new Date().toLocaleDateString(),
-          data: data
-        };
-        setSecureFiles(prev => [newFile, ...prev]);
-        alert(`${file.name} securely stored in Aegis Vault.`);
-      };
-      reader.readAsDataURL(file);
+  const refreshVault = async (uid?: string) => {
+    const targetUid = uid || user?.uid;
+    if (!targetUid) return;
+    setVaultLoading(true);
+    try {
+      const keys = await EncryptionService.getOrCreateKeyPair(targetUid);
+      setVaultFiles(await loadVaultFiles(targetUid, keys.privateKey));
+    } catch (error) {
+      console.error('Could not load the secure vault', error);
+      showToast('Could not open your secure vault');
+    } finally {
+      setVaultLoading(false);
     }
   };
+
+  const uploadToVault = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Allow selecting the same file again later.
+    e.target.value = '';
+    if (!file || !user) return;
+
+    if (file.size > VAULT_MAX_BYTES) {
+      alert('Vault files must be 25 MB or smaller.');
+      return;
+    }
+
+    setVaultBusy('Reading file');
+    try {
+      const result = await addVaultFile(user.uid, file, setVaultBusy);
+      setVaultFiles(prev => [result.entry, ...prev.filter(item => item.id !== result.entry.id)]);
+      showToast(
+        result.analysis?.isSafe === false
+          ? `${file.name} stored — the scan flagged it, review the report`
+          : `${file.name} scanned and stored securely`,
+      );
+    } catch (error: any) {
+      console.error('Vault upload failed', error);
+      alert(error?.message || 'Could not add this file to the vault.');
+    } finally {
+      setVaultBusy(null);
+    }
+  };
+
+  const downloadFromVault = async (entry: VaultFile) => {
+    if (!user) return;
+    setVaultBusy(`Decrypting ${entry.fileName}`);
+    try {
+      const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+      const { base64, mimeType } = await readVaultFile(entry, keys.privateKey);
+      saveBlob(base64ToBlob(base64, mimeType), entry.fileName);
+    } catch (error) {
+      console.error('Vault download failed', error);
+      alert('Could not decrypt this vault file.');
+    } finally {
+      setVaultBusy(null);
+    }
+  };
+
+  const sendFromVault = async (entry: VaultFile) => {
+    if (!user) return;
+    if (!selectedChatId) {
+      alert('Open a chat first, then send a file from your vault.');
+      return;
+    }
+    setVaultBusy(`Decrypting ${entry.fileName}`);
+    try {
+      const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+      const { base64, mimeType } = await readVaultFile(entry, keys.privateKey);
+      const file = new File([base64ToBlob(base64, mimeType)], entry.fileName, { type: mimeType });
+      setSelectedImage(null);
+      setSelectedFile({
+        name: entry.fileName,
+        size: file.size,
+        date: new Date().toLocaleDateString(),
+        file,
+      });
+      setShowVault(false);
+      showToast('Vault file attached — press Send to share it');
+    } catch (error) {
+      console.error('Vault send failed', error);
+      alert('Could not decrypt this vault file.');
+    } finally {
+      setVaultBusy(null);
+    }
+  };
+
+  const removeFromVault = async (entry: VaultFile) => {
+    if (!user) return;
+    if (!confirm(`Remove ${entry.fileName} from your vault?`)) return;
+    try {
+      await deleteVaultFile(user.uid, entry.id);
+      setVaultFiles(prev => prev.filter(item => item.id !== entry.id));
+      showToast('Removed from vault');
+    } catch (error) {
+      console.error('Vault delete failed', error);
+      alert('Could not remove this vault file.');
+    }
+  };
+
+  useEffect(() => {
+    if (showVault && user) {
+      void refreshVault(user.uid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showVault, user?.uid]);
 
   // --- Render Helpers ---
 
@@ -5033,10 +5204,7 @@ export default function App() {
                                             }
                                           }
                                           if (finalData) {
-                                            const a = document.createElement('a');
-                                            a.href = finalData;
-                                            a.download = msg.decryptedFileName || 'secure_file';
-                                            a.click();
+                                            await downloadDecryptedFile(finalData, msg.decryptedFileName || 'secure_file');
                                           } else {
                                             alert("Unable to decrypt file. Keys may be missing.");
                                           }
@@ -5314,16 +5482,13 @@ export default function App() {
                         </label>
                         <button 
                           type="button" 
-                          onClick={() => showComingSoonNotice('Secure file vault')}
+                          onClick={() => setShowVault(true)}
                           className={cn(
                             "relative p-2 rounded-lg transition-all",
                             theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                           )}
                           title="Secure Vault"
                         >
-                          <span className="absolute -top-2 -right-3 z-10">
-                            <ComingSoonBadge compact />
-                          </span>
                           <HardDrive className="w-5 h-5" />
                         </button>
                       </>
@@ -6196,7 +6361,14 @@ export default function App() {
                                 <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-500")}>Manage your encrypted vault</p>
                               </div>
                             </div>
-                            <span className={cn("text-xs font-bold", theme === 'glow' ? "text-emerald-500" : "text-zinc-500")}>1.2 GB</span>
+                            <button
+                              onClick={handleFileAccess}
+                              className={cn("text-xs font-bold px-3 py-1.5 rounded-lg transition-all", theme === 'glow' ? "text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20" : "text-emerald-600 bg-emerald-50 hover:bg-emerald-100")}
+                            >
+                              {vaultFiles.length > 0
+                                ? `${(vaultFiles.reduce((total, file) => total + (Number(file.size) || 0), 0) / (1024 * 1024)).toFixed(2)} MB`
+                                : 'Open'}
+                            </button>
                           </div>
                           <div className={cn(
                             "p-4 rounded-2xl border flex items-center justify-between transition-all",
@@ -7260,8 +7432,10 @@ export default function App() {
 
                 <button 
                   onClick={async () => {
-                    await updateProfile();
-                    setShowCompleteProfile(false);
+                    const saved = await updateProfile();
+                    if (saved) {
+                      setShowCompleteProfile(false);
+                    }
                   }}
                   disabled={!editDisplayName || isUpdatingProfile}
                   className="w-full py-4 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-600 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
@@ -7349,10 +7523,15 @@ export default function App() {
                   )}>
                     <Shield className={cn("w-5 h-5", theme === 'glow' ? "text-emerald-400" : "text-emerald-600")} />
                   </div>
-                  <h2 className={cn(
-                    "text-xl font-bold",
-                    theme !== 'light' ? 'text-white' : 'text-zinc-900'
-                  )}>Aegis Secure Vault</h2>
+                  <div>
+                    <h2 className={cn(
+                      "text-xl font-bold",
+                      theme !== 'light' ? 'text-white' : 'text-zinc-900'
+                    )}>Aegis Secure Vault</h2>
+                    <p className={cn("text-[10px] font-bold uppercase tracking-widest", theme === 'glow' ? "text-emerald-500/60" : "text-zinc-400")}>
+                      {vaultFiles.length} file{vaultFiles.length === 1 ? '' : 's'} • {(vaultFiles.reduce((total, file) => total + (Number(file.size) || 0), 0) / 1024).toFixed(1)} KB encrypted
+                    </p>
+                  </div>
                 </div>
                 <button onClick={() => setShowVault(false)} className="text-zinc-400 hover:text-zinc-600">
                   <XCircle className="w-6 h-6" />
@@ -7365,8 +7544,13 @@ export default function App() {
                     theme === 'glow' ? "border-emerald-500/20 hover:bg-emerald-500/5" : "border-zinc-200 hover:bg-zinc-50"
                   )}>
                     <Plus className={cn("w-6 h-6", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400")} />
-                    <span className={cn("text-sm font-medium", theme === 'glow' ? "text-emerald-500/70" : "text-zinc-500")}>Upload Secure File</span>
-                    <input type="file" className="hidden" onChange={uploadToVault} />
+                    <span className={cn("text-sm font-medium", theme === 'glow' ? "text-emerald-500/70" : "text-zinc-500")}>
+                      {vaultBusy ? vaultBusy : 'Upload, scan and store a file'}
+                    </span>
+                    <span className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/40" : "text-zinc-400")}>
+                      Encrypted on this device • AI scan on upload • up to 25 MB
+                    </span>
+                    <input type="file" className="hidden" onChange={uploadToVault} disabled={!!vaultBusy} />
                   </label>
                 </div>
 
@@ -7375,65 +7559,89 @@ export default function App() {
                     "text-xs font-bold uppercase tracking-wider ml-1",
                     theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
                   )}>Stored Files</h4>
-                  {secureFiles.length === 0 ? (
+                  {vaultLoading ? (
+                    <div className="text-center py-12">
+                      <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin mx-auto mb-3" />
+                      <p className={cn("text-sm", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400")}>Opening encrypted vault...</p>
+                    </div>
+                  ) : vaultFiles.length === 0 ? (
                     <div className="text-center py-12 text-zinc-300">
                       <Paperclip className="w-10 h-10 mx-auto mb-2 opacity-20" />
                       <p className="text-sm">No files in vault</p>
                     </div>
                   ) : (
-                    secureFiles.map((file, i) => (
-                      <div key={i} className={cn(
-                        "p-4 rounded-2xl border flex items-center justify-between transition-all",
-                        theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
-                      )}>
-                        <div className="flex items-center gap-3">
-                          <div className={cn(
-                            "w-8 h-8 rounded-lg flex items-center justify-center shadow-sm transition-all",
-                            theme === 'glow' ? "bg-emerald-900/40" : "bg-white"
-                          )}>
-                            <FileText className={cn("w-4 h-4", theme === 'glow' ? "text-emerald-400" : "text-zinc-500")} />
+                    vaultFiles.map((file) => {
+                      const analysis = file.analysis;
+                      const verdict = !analysis
+                        ? { tone: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20', label: 'Not scanned', icon: <Shield className="w-3 h-3" />, summary: 'No scan result was stored for this file.' }
+                        : analysis.isSafe
+                          ? { tone: 'text-emerald-500 bg-emerald-500/10 border-emerald-500/20', label: `Safe • ${analysis.score}/100`, icon: <ShieldCheck className="w-3 h-3" />, summary: analysis.summary }
+                          : { tone: 'text-amber-500 bg-amber-500/10 border-amber-500/20', label: `Review • ${analysis.score}/100`, icon: <ShieldAlert className="w-3 h-3" />, summary: analysis.summary };
+
+                      return (
+                        <div key={file.id} className={cn(
+                          "p-4 rounded-2xl border transition-all",
+                          theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
+                        )}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className={cn(
+                                "w-8 h-8 rounded-lg flex items-center justify-center shadow-sm shrink-0 transition-all",
+                                theme === 'glow' ? "bg-emerald-900/40" : "bg-white"
+                              )}>
+                                <FileText className={cn("w-4 h-4", theme === 'glow' ? "text-emerald-400" : "text-zinc-500")} />
+                              </div>
+                              <div className="min-w-0">
+                                <p className={cn("text-sm font-bold truncate max-w-[180px]", theme !== 'light' ? 'text-white' : 'text-zinc-900')}>{file.fileName}</p>
+                                <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400")}>{(file.size / 1024).toFixed(1)} KB • {file.friendlyDate}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={() => void downloadFromVault(file)}
+                                title="Download decrypted file"
+                                className={cn(
+                                  "p-2 rounded-lg transition-colors",
+                                  theme === 'glow' ? "text-emerald-400 hover:bg-emerald-500/10" : "text-emerald-600 hover:bg-emerald-50"
+                                )}
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => void sendFromVault(file)}
+                                title="Send this file to the current chat"
+                                className={cn(
+                                  "p-2 rounded-lg transition-colors text-xs font-bold uppercase tracking-widest",
+                                  theme === 'glow' ? "text-emerald-400 hover:bg-emerald-500/10" : "text-emerald-600 hover:bg-emerald-50"
+                                )}
+                              >
+                                Send
+                              </button>
+                              <button
+                                onClick={() => void removeFromVault(file)}
+                                title="Remove from vault"
+                                className={cn(
+                                  "p-2 rounded-lg transition-colors",
+                                  theme === 'glow' ? "text-red-400 hover:bg-red-500/10" : "text-red-500 hover:bg-red-50"
+                                )}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
-                          <div>
-                            <p className={cn("text-sm font-bold truncate max-w-[150px]", theme !== 'light' ? 'text-white' : 'text-zinc-900')}>{file.name}</p>
-                            <p className={cn("text-[10px]", theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400")}>{(file.size / 1024).toFixed(1)} KB • {file.date}</p>
+                          <div className="mt-3">
+                            <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold uppercase tracking-widest", verdict.tone)}>
+                              {verdict.icon}
+                              {verdict.label}
+                            </span>
+                            <p className={cn("text-[11px] mt-2 leading-relaxed", theme === 'glow' ? "text-emerald-500/60" : "text-zinc-500")}>{verdict.summary}</p>
+                            {analysis?.steganographyReport && analysis.steganographyReport !== 'N/A' && (
+                              <p className={cn("text-[10px] mt-1", theme === 'glow' ? "text-emerald-500/40" : "text-zinc-400")}>Steganography: {analysis.steganographyReport}</p>
+                            )}
                           </div>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button 
-                            onClick={async () => {
-                              setSelectedFile(file);
-                              setShowVault(false);
-                              // Auto-send if a chat is selected
-                              if (selectedChatId) {
-                                // We need to trigger sendMessage manually or wait for state update
-                                // For simplicity, let's just set the state and the user clicks send
-                                // But the user wants it "sendable", so let's try to send immediately
-                                setTimeout(() => {
-                                  const sendBtn = document.getElementById('chat-send-btn');
-                                  sendBtn?.click();
-                                }, 100);
-                              }
-                            }}
-                            title="Send this file to the current chat"
-                            className={cn(
-                              "p-2 rounded-lg transition-colors text-xs font-bold uppercase tracking-widest",
-                              theme === 'glow' ? "text-emerald-400 hover:bg-emerald-500/10" : "text-emerald-600 hover:bg-emerald-50"
-                            )}
-                          >
-                            Send
-                          </button>
-                          <button 
-                            title="Encrypted file"
-                            className={cn(
-                              "p-2 rounded-lg transition-colors",
-                              theme === 'glow' ? "text-emerald-500/50 hover:bg-emerald-500/10" : "text-zinc-400 hover:bg-zinc-100"
-                            )}
-                          >
-                            <Lock className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
