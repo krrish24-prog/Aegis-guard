@@ -122,7 +122,7 @@ import { KeyManagementService } from './services/keyManagementService';
 import { downloadDecryptedFile, saveBlob, base64ToBlob } from './services/fileDownloadService';
 import { loadVaultFiles, addVaultFile, readVaultFile, deleteVaultFile, VAULT_MAX_BYTES, VaultFile } from './services/vaultService';
 import { ThreatIntelligenceService } from './services/threatIntelligenceService';
-import { decryptMessageMedia, buildFileDataInfo } from './services/messageMediaService';
+import { decryptMessageMedia, buildFileDataInfo, isUsableFilePayload, resolveMessageFileData } from './services/messageMediaService';
 import { analyzeDecryptedMessage } from './services/messageAnalysisService';
 import { MessageEnhancementsService } from './services/messageEnhancementsService';
 import { WebRTCService } from './services/webrtcService';
@@ -131,6 +131,7 @@ import { AdminService } from './services/adminService';
 import { authenticatedFetch } from './services/apiClient';
 import { uploadMediaToSecureStorage, arrayBufferToBase64 } from './services/mediaStorageService';
 import { normalizeParticipantList } from './utils/participants';
+import { stripUndefined } from './utils/firestorePayload';
 import SecurityDashboard from './components/SecurityDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import MessageActions from './components/MessageActions';
@@ -1517,6 +1518,7 @@ export default function App() {
   const updateUserSetting = async (category: string, key: string, value: any) => {
     if (!user) return;
     try {
+      if (value === undefined) return;
       await updateDoc(doc(db, 'users', user.uid), {
         [`${category}.${key}`]: value
       });
@@ -1776,10 +1778,27 @@ export default function App() {
               // display name. Once a name exists (or the account was previously
               // completed), refreshing or re-logging in must not ask again.
               if (isPlaceholderName(publicData.displayName)) {
-                const completedBefore = publicData.profileCompleted === true
+                const authName = (u.displayName || '').trim();
+                const storedPrivateName = String(privateData.displayName || '').trim();
+                const rememberedName = !isPlaceholderName(storedPrivateName)
+                  ? storedPrivateName
+                  : (!isPlaceholderName(authName) ? authName : '');
+                const completedBefore = Boolean(rememberedName)
+                  || publicData.profileCompleted === true
+                  || privateData.profileCompleted === true
                   || hasCompletedProfileLocally(u.uid);
                 if (completedBefore) {
                   markProfileComplete(u.uid);
+                  // Heal the public profile so contacts see the saved name and
+                  // the dialog never returns for this account.
+                  if (rememberedName) {
+                    updateDoc(doc(db, 'users_public', u.uid), {
+                      displayName: rememberedName,
+                      profileCompleted: true,
+                    }).catch((error) => console.warn('Could not heal public profile name', error));
+                    setProfile(prev => prev ? { ...prev, displayName: rememberedName } : prev);
+                    setEditDisplayName(rememberedName);
+                  }
                 } else {
                   setEditDisplayName((u.displayName || '').trim());
                   setEditPhoneNumber(String(privateData.phoneNumber || ''));
@@ -2333,32 +2352,36 @@ export default function App() {
   };
 
   const updateProfile = async (): Promise<boolean> => {
-    if (!user || !profile) return false;
+    if (!user) return false;
     setIsUpdatingProfile(true);
     try {
       // Normalize phone number for storage
       const normalizedPhone = editPhoneNumber.replace(/\D/g, '');
       const normalizedPhotoURL = editPhotoURL?.startsWith('data:image/')
         ? await resizeImage(editPhotoURL, 180_000)
-        : (editPhotoURL || profile.photoURL || '');
-      
-      const privateUpdate = {
-        phoneNumber: normalizedPhone,
-        privacySettings: profile.privacySettings || {},
-        storageSettings: profile.storageSettings || {},
-        securitySettings: profile.securitySettings || {},
-        callSettings: profile.callSettings || {},
-        photoURL: normalizedPhotoURL
-      };
-      
+        : (editPhotoURL || profile?.photoURL || '');
       const trimmedName = editDisplayName.trim();
-      const publicUpdate = {
+
+      const privateUpdate = stripUndefined({
+        phoneNumber: normalizedPhone,
+        privacySettings: profile?.privacySettings || {},
+        storageSettings: profile?.storageSettings || {},
+        securitySettings: profile?.securitySettings || {},
+        callSettings: profile?.callSettings || {},
+        photoURL: normalizedPhotoURL,
+        // Backup copy of the name + completion flag in the private document, so
+        // the dialog still knows the profile is done if users_public is stale.
+        displayName: trimmedName,
+        profileCompleted: true,
+      });
+
+      const publicUpdate = stripUndefined({
         displayName: trimmedName,
         status: editStatus,
         photoURL: normalizedPhotoURL,
         // Remembered in Firestore so a refresh on another device never asks again.
         profileCompleted: true,
-      };
+      });
 
       await Promise.all([
         setDoc(doc(db, 'users', user.uid), privateUpdate, { merge: true }),
@@ -2376,10 +2399,12 @@ export default function App() {
       markProfileComplete(user.uid);
 
       const updatedProfile = {
-        ...profile,
+        ...(profile || {}),
+        uid: user.uid,
+        email: user.email?.toLowerCase() || '',
         ...privateUpdate,
         ...publicUpdate
-      };
+      } as UserProfile;
       setProfile(updatedProfile);
       setEditDisplayName(trimmedName);
       setEditPhotoURL(normalizedPhotoURL);
@@ -5175,42 +5200,26 @@ export default function App() {
                                         onClick={async (e) => {
                                         e.stopPropagation();
                                         try {
-                                          let finalData = msg.decryptedFileData;
-                                          if (!finalData && msg.fileUrl && msg.encryptedFileDataSessionKeys && msg.fileDataIv) {
-                                            const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
-                                            const getSessionKeyForMe = (keyMap?: Record<string, string>) => {
-                                              if (keyMap && user) {
-                                                if (keyMap[user.uid]) return keyMap[user.uid];
-                                                const myEmail = user.email ? user.email.toLowerCase() : '';
-                                                if (myEmail && keyMap[myEmail]) return keyMap[myEmail];
-                                                const foundKeyEntry = Object.entries(keyMap).find(([keyStr]) => {
-                                                  return (myEmail && keyStr.toLowerCase() === myEmail);
-                                                });
-                                                return foundKeyEntry ? foundKeyEntry[1] : undefined;
-                                              }
-                                              return undefined;
-                                            };
-                                            const dataKey = getSessionKeyForMe(msg.encryptedFileDataSessionKeys) || msg.encryptedFileDataSessionKey;
-                                            if (dataKey) {
-                                              const base64Str = await EncryptionService.decryptFileUrl(msg.fileUrl, dataKey, msg.fileDataIv, keys.privateKey);
-                                              
-                                              let mimeType = "application/octet-stream";
-                                              if (msg.decryptedFileName?.toLowerCase().endsWith('.pdf')) mimeType = "application/pdf";
-                                              else if (msg.decryptedFileName?.toLowerCase().endsWith('.jpg')) mimeType = "image/jpeg";
-                                              else if (msg.decryptedFileName?.toLowerCase().endsWith('.png')) mimeType = "image/png";
-                                              else if (msg.decryptedFileName?.toLowerCase().endsWith('.txt')) mimeType = "text/plain";
-                                              
-                                              finalData = `data:${mimeType};base64,${base64Str}`;
-                                            }
+                                          const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+                                          const fileName = msg.decryptedFileName || 'secure_file';
+                                          let finalData = isUsableFilePayload(msg.decryptedFileData) ? msg.decryptedFileData : undefined;
+                                          if (!finalData) {
+                                            finalData = await resolveMessageFileData(
+                                              msg,
+                                              user.uid,
+                                              user.email,
+                                              keys.privateKey,
+                                              msg.decryptedFileName,
+                                            );
                                           }
                                           if (finalData) {
-                                            await downloadDecryptedFile(finalData, msg.decryptedFileName || 'secure_file');
+                                            await downloadDecryptedFile(finalData, fileName);
                                           } else {
                                             alert("Unable to decrypt file. Keys may be missing.");
                                           }
-                                        } catch (err) {
+                                        } catch (err: any) {
                                           console.error("Failed to download file.", err);
-                                          alert("Failed to securely download the file.");
+                                          alert(`Failed to securely download the file. ${err?.message || ''}`.trim());
                                         }
                                       }}
                                       className={cn(

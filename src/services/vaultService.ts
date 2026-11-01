@@ -4,6 +4,7 @@ import { EncryptionService } from './encryptionService';
 import { arrayBufferToBase64, uploadMediaToSecureStorage } from './mediaStorageService';
 import { buildFileDataInfo, mimeFromFileName } from './messageMediaService';
 import { SecurityAnalysis, SecurityService } from './securityService';
+import { stripUndefined } from '../utils/firestorePayload';
 
 /**
  * Aegis Secure Vault.
@@ -67,7 +68,9 @@ async function readEntries(uid: string): Promise<VaultEntry[]> {
 }
 
 async function writeEntries(uid: string, entries: VaultEntry[]): Promise<void> {
-  await updateDoc(doc(db, 'users', uid), { [VAULT_FIELD]: entries });
+  // `fileData` is undefined for files kept in object storage, and Firestore
+  // rejects undefined field values, so strip them before saving.
+  await updateDoc(doc(db, 'users', uid), stripUndefined({ [VAULT_FIELD]: entries }));
 }
 
 /** Load the vault and decrypt file names for display. */

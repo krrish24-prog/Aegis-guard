@@ -59,10 +59,12 @@ function fileNameFromDataUrl(dataUrl: string): string | undefined {
  * a `blob:` object URL (the optimistic local copy shown right after sending).
  */
 export async function downloadDecryptedFile(finalData: string, fileName: string): Promise<void> {
+  if (!finalData) throw new Error('This file has no downloadable content.');
   const safeName = fileName || fileNameFromDataUrl(finalData) || 'aegis-file';
 
   if (finalData.startsWith('blob:')) {
     const response = await fetch(finalData);
+    if (!response.ok) throw new Error('The local copy of this file is no longer available.');
     saveBlob(await response.blob(), safeName);
     return;
   }
@@ -72,7 +74,12 @@ export async function downloadDecryptedFile(finalData: string, fileName: string)
     return;
   }
 
-  // Raw base64 with no data URL prefix.
+  // Raw base64 with no data URL prefix. Reject placeholders such as
+  // "uploading..." or "inline" so the user gets a clear message instead of an
+  // opaque atob failure.
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(finalData) || finalData.replace(/[^A-Za-z0-9+/=]/g, '').length < 8) {
+    throw new Error('This attachment is not ready yet. Wait for the secure upload to finish.');
+  }
   const mime = /\.pdf$/i.test(safeName) ? 'application/pdf' : 'application/octet-stream';
   saveBlob(base64ToBlob(finalData, mime), safeName);
 }

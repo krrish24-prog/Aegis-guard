@@ -142,7 +142,11 @@ export async function decryptMessageMedia(
   // Inline encrypted file blob (legacy)
   if (m.fileData && dataKey && m.fileDataIv && m.fileUrl !== 'uploading...') {
     try {
-      decryptedFileData = await EncryptionService.decrypt(m.fileData, dataKey, m.fileDataIv, privateKey);
+      // Documents are binary: decoding the decrypted buffer as text corrupts it,
+      // so keep the bytes and rebuild a data URL that can actually be saved.
+      const b64 = await EncryptionService.decrypt(m.fileData, dataKey, m.fileDataIv, privateKey, true);
+      const mime = mimeFromFileName(decryptedFileName || 'file');
+      decryptedFileData = `data:${mime};base64,${b64}`;
     } catch {
       console.warn('Failed to decrypt inline file data');
     }
@@ -188,6 +192,60 @@ export async function decryptMessageMedia(
   }
 
   return { decryptedContent, decryptedImageUrl, decryptedFileName, decryptedFileData, decryptedVoiceUrl };
+}
+
+/** Payloads that are not real file content and must never be decoded. */
+const NON_PAYLOAD_VALUES = new Set(['', 'inline', 'uploading...', 'uploading', 'undefined', 'null']);
+
+export function isUsableFilePayload(value?: string | null): value is string {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (!trimmed || NON_PAYLOAD_VALUES.has(trimmed)) return false;
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('http')) return true;
+  if (trimmed.startsWith('/api/')) return true;
+  // Raw base64 payload.
+  return /^[A-Za-z0-9+/=\r\n]+$/.test(trimmed) && trimmed.replace(/[^A-Za-z0-9+/=]/g, '').length >= 8;
+}
+
+/**
+ * Resolve the decrypted bytes of a message attachment as a `data:` URL.
+ * Works for inline ciphertext, object storage (B2/Appwrite) and legacy plaintext
+ * payloads, so the download button behaves the same in every case.
+ */
+export async function resolveMessageFileData(
+  m: MediaFields,
+  userUid: string,
+  userEmail: string | null | undefined,
+  privateKey: string,
+  decryptedFileName?: string,
+): Promise<string | undefined> {
+  const dataKey = resolveSessionKey(userUid, userEmail, m.encryptedFileDataSessionKey, m.encryptedFileDataSessionKeys);
+  const mime = mimeFromFileName(decryptedFileName || m.fileName || 'file');
+
+  // 1. Inline ciphertext.
+  if (m.fileData && dataKey && m.fileDataIv) {
+    try {
+      const b64 = await EncryptionService.decrypt(m.fileData, dataKey, m.fileDataIv, privateKey, true);
+      return `data:${mime};base64,${b64}`;
+    } catch {
+      console.warn('Inline file decryption failed, trying stored copy');
+    }
+  }
+
+  // 2. Legacy plaintext inline payload.
+  if (m.fileData && !m.fileDataIv && isUsableFilePayload(m.fileData)) {
+    return m.fileData.startsWith('data:')
+      ? m.fileData
+      : `data:${mime};base64,${m.fileData}`;
+  }
+
+  // 3. Encrypted copy in object storage.
+  if (m.fileUrl && isUsableFilePayload(m.fileUrl) && dataKey && m.fileDataIv && isRemoteEncryptedUrl(m.fileUrl)) {
+    const b64 = await EncryptionService.decryptFileUrl(m.fileUrl, dataKey, m.fileDataIv, privateKey);
+    return `data:${mime};base64,${b64}`;
+  }
+
+  return undefined;
 }
 
 /** Shrink image data URLs for AI analysis (Gemini inline limit). */
