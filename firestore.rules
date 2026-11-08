@@ -174,13 +174,16 @@ service cloud.firestore {
             || isAdmin());
     }
 
+    // Status feed (photos, videos, text with an 8h/24h/48h lifetime).
+    // `userId` is stored as the account email (or its uid), so ownership checks
+    // go through isMe(), which accepts both forms. Without that, an author could
+    // never delete their own status, whose userId is the email address.
     match /status_updates/{statusId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update: if isAuthenticated()
-        && (resource.data.userId == getUserUid() || !("userId" in resource.data));
-      allow delete: if isAuthenticated()
-        && (resource.data.userId == getUserUid() || isAdmin());
+      allow create: if isAuthenticated()
+        && isMe(request.resource.data.userId);
+      allow update, delete: if isAuthenticated()
+        && (isMe(resource.data.userId) || isAdmin());
     }
 
     match /security_audit_logs/{logId} {

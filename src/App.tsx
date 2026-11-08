@@ -185,6 +185,94 @@ const hasCompletedProfileLocally = (uid: string) => {
   }
 };
 
+const readFileAsDataUrl = (file: Blob): Promise<string> =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Unable to read file'));
+    };
+    reader.onerror = () => reject(reader.error || new Error('Unable to read file'));
+    reader.readAsDataURL(file);
+  });
+
+/**
+ * Grab one representative frame from a video so the vision scan can inspect it.
+ * Resolves to null when the browser cannot decode the file (the caption is still scanned).
+ */
+const captureVideoFrame = (file: File): Promise<string | null> =>
+  new Promise<string | null>((resolve) => {
+    let settled = false;
+    const video = document.createElement('video');
+    const objectUrl = URL.createObjectURL(file);
+
+    const finish = (result: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      video.onloadeddata = null;
+      video.onseeked = null;
+      video.onerror = null;
+      try { video.pause(); } catch { /* ignore */ }
+      video.removeAttribute('src');
+      try { video.load(); } catch { /* ignore */ }
+      URL.revokeObjectURL(objectUrl);
+      resolve(result);
+    };
+
+    const timeout = setTimeout(() => finish(null), 8000);
+
+    video.preload = 'auto';
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadeddata = () => {
+      try {
+        const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 1;
+        video.currentTime = Math.min(1, duration / 2);
+      } catch {
+        finish(null);
+      }
+    };
+    video.onseeked = () => {
+      try {
+        const width = video.videoWidth || 720;
+        const height = video.videoHeight || 720;
+        const scale = Math.min(1, 720 / Math.max(width, height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) return finish(null);
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        finish(canvas.toDataURL('image/jpeg', 0.82));
+      } catch {
+        finish(null);
+      }
+    };
+    video.onerror = () => finish(null);
+    video.src = objectUrl;
+  });
+
+/** A status lives for the lifetime its author picked (8h/24h/48h); old docs default to 24h. */
+const statusExpiryMs = (status: StatusUpdate): number => {
+  if (status.expiresAt && typeof status.expiresAt.toMillis === 'function') {
+    return status.expiresAt.toMillis();
+  }
+  const created = status.timestamp && typeof status.timestamp.toMillis === 'function'
+    ? status.timestamp.toMillis()
+    : 0;
+  return created ? created + 24 * 60 * 60 * 1000 : 0;
+};
+
+const formatStatusTimeLeft = (expiryMs: number, now: number): string => {
+  const remaining = expiryMs - now;
+  if (remaining <= 0) return 'Expired';
+  const hours = Math.floor(remaining / (60 * 60 * 1000));
+  if (hours >= 1) return `${hours}h left`;
+  const minutes = Math.max(1, Math.floor(remaining / 60_000));
+  return `${minutes}m left`;
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -336,9 +424,19 @@ interface StatusUpdate {
   id: string;
   userId: string;
   mediaUrl: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'text';
+  text?: string;
   timestamp: Timestamp;
+  /** When the status stops being visible (8h, 24h or 48h after posting). */
+  expiresAt?: Timestamp;
+  durationHours?: 8 | 24 | 48;
   privacy?: 'everyone' | 'contacts' | 'me' | 'except';
+  securityStatus?: SecurityAnalysis;
+  authorName?: string;
+  authorPhoto?: string;
+  /** Local-only upload state while an optimistic card is on screen. */
+  uploading?: boolean;
+  progress?: number;
 }
 
 // --- Components ---
@@ -685,6 +783,15 @@ export default function App() {
   const [contactStatuses, setContactStatuses] = useState<Map<string, ContactStatus>>(new Map());
   const [customStatusMessage, setCustomStatusMessage] = useState('Available');
   const statusUnsubscribeRef = useRef<(() => void) | null>(null);
+  // Status composer (unlocked): a photo/video/text draft with a chosen lifetime.
+  const [statusDraft, setStatusDraft] = useState<{ file: File | null; previewUrl: string | null; type: 'image' | 'video' | 'text' } | null>(null);
+  const [statusCaption, setStatusCaption] = useState('');
+  const [statusDurationHours, setStatusDurationHours] = useState<8 | 24 | 48>(24);
+  const [statusScan, setStatusScan] = useState<SecurityAnalysis | null>(null);
+  const [statusScanning, setStatusScanning] = useState(false);
+  const [isPostingStatus, setIsPostingStatus] = useState(false);
+  const [statusPostError, setStatusPostError] = useState<string | null>(null);
+  const [statusClock, setStatusClock] = useState(Date.now());
 
   const allStatuses = useMemo(() => {
     const combined = [...localStatusUpdates, ...statusUpdates];
@@ -692,125 +799,178 @@ export default function App() {
     return unique.sort((a, b) => (b.timestamp?.toMillis() || Date.now()) - (a.timestamp?.toMillis() || Date.now()));
   }, [localStatusUpdates, statusUpdates]);
 
-  const handleStatusUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user) return;
+  // Statuses disappear the moment their chosen lifetime (8h/24h/48h) runs out.
+  const visibleStatuses = useMemo(
+    () => allStatuses.filter(status => statusExpiryMs(status) > statusClock),
+    [allStatuses, statusClock]
+  );
 
-    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
-       alert("Status updates only support images and videos.");
-       e.target.value = '';
-       return;
+  // Status cards count down live so an 8h status disappears on schedule without a refresh.
+  useEffect(() => {
+    const timer = setInterval(() => setStatusClock(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const closeStatusComposer = () => {
+    if (statusDraft?.previewUrl) {
+      try { URL.revokeObjectURL(statusDraft.previewUrl); } catch { /* ignore */ }
     }
+    setStatusDraft(null);
+    setStatusCaption('');
+    setStatusScan(null);
+    setStatusScanning(false);
+    setStatusPostError(null);
+  };
 
-    if (file.size > 20 * 1024 * 1024) {
-      alert("Status update must be less than 20MB.");
-      return;
-    }
-    
-    // Clear the input so they can select again
-    e.target.value = '';
+  const openStatusComposer = (file?: File, textOnly = false) => {
+    setStatusPostError(null);
+    setStatusScan(null);
 
-    const isVideo = file.type.startsWith('video/');
-    const localUrl = URL.createObjectURL(file);
-    const tempId = `temp_${Date.now()}`;
-    
-    const optimisticStatus = {
-      id: tempId,
-      userId: user.email || user.uid,
-      mediaUrl: localUrl,
-      type: (isVideo ? 'video' : 'image') as 'video' | 'image',
-      timestamp: Timestamp.now(),
-      uploading: true,
-      privacy: statusPrivacy,
-    };
+    if (!file && !textOnly) return;
 
-    setLocalStatusUpdates(prev => [optimisticStatus, ...prev]);
-
-    const performUpload = async () => {
-      try {
-        let blobData: Blob = file;
-        if (!isVideo) {
-            try {
-                const base64Data = await new Promise<string>((res, rej) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        if (typeof reader.result === 'string') {
-                            res(reader.result);
-                        } else {
-                            rej(new Error("Base64 read failed"));
-                        }
-                    };
-                    reader.onerror = rej;
-                    reader.readAsDataURL(file);
-                });
-                const resizedBase64 = await resizeImage(base64Data);
-                // Convert base64 to blob
-                const res = await fetch(resizedBase64);
-                blobData = await res.blob();
-            } catch (err) {
-                console.error("Failed to resize status image", err);
-            }
-        }
-
-        const { fileUrl: mediaUrl } = await uploadMediaToSecureStorage(blobData, {
-            fileName: file.name,
-            purpose: 'status',
-            contentType: blobData.type || file.type,
-        });
-
-        const actualId = tempId.replace('temp_', 'status_'); // just a unique ID
-        const statusRef = doc(collection(db, 'status_updates'), actualId);
-        
-        const newStatus = {
-          id: statusRef.id,
-          userId: user.email || user.uid,
-          mediaUrl,
-          type: (isVideo ? 'video' : 'image') as 'video' | 'image',
-          timestamp: Timestamp.now(),
-          privacy: statusPrivacy,
-        };
-        
-        // Only proceed if not cancelled
-        let isCancelled = false;
-        setLocalStatusUpdates(prev => {
-           if (!prev.some(s => s.id === tempId)) {
-               isCancelled = true;
-           }
-           return prev; // no-op
-        });
-
-        if (isCancelled) {
-            console.log("Status upload was cancelled, aborting save.");
-            return;
-        }
-        
-        // Save to Firestore first
-        await setDoc(statusRef, newStatus).catch(err => {
-             console.error("Failed to save status doc:", err);
-        });
-
-        // ONLY AFTER saving, update the local UI state so it doesn't get stuck spinning
-        setLocalStatusUpdates(prev => {
-          const stillExists = prev.some(s => s.id === tempId);
-          if (stillExists) {
-            return prev.map(s => s.id === tempId ? { ...newStatus, uploading: false } : s);
-          }
-          return prev;
-        });
-
-        // Let real-time listener run
-        setTimeout(() => {
-          setLocalStatusUpdates(prev => prev.filter(s => s.id !== tempId && s.id !== statusRef.id));
-        }, 1000);
-
-      } catch (error: any) {
-        setLocalStatusUpdates(prev => prev.filter(s => s.id !== tempId));
-        console.error("Status upload failed:", error);
-        alert("Status upload failed: " + (error.message || 'Unknown error'));
+    if (file) {
+      const isVideo = file.type.startsWith('video/');
+      if (!file.type.startsWith('image/') && !isVideo) {
+        alert('Status updates support photos, videos and text.');
+        return;
       }
+      if (file.size > 45 * 1024 * 1024) {
+        alert('A status photo or video must be smaller than 45 MB.');
+        return;
+      }
+      if (statusDraft?.previewUrl) {
+        try { URL.revokeObjectURL(statusDraft.previewUrl); } catch { /* ignore */ }
+      }
+      setStatusDraft({ file, previewUrl: URL.createObjectURL(file), type: isVideo ? 'video' : 'image' });
+    } else {
+      setStatusDraft({ file: null, previewUrl: null, type: 'text' });
+    }
+  };
+
+  const handleStatusUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) openStatusComposer(file);
+  };
+
+  /**
+   * Scan the exact content that will be published: images go through the vision
+   * steganography/phishing scan, videos are sampled from a real frame, and text
+   * statuses are scanned as a message. The caption is always part of the scan.
+   */
+  const analyzeStatusContent = async (): Promise<SecurityAnalysis> => {
+    const caption = statusCaption.trim();
+    let fileDataInfo: { data: string; mimeType: string } | undefined;
+    let scanNote: string | null = null;
+
+    if (statusDraft?.file) {
+      if (statusDraft.type === 'image') {
+        try {
+          const dataUrl = await readFileAsDataUrl(statusDraft.file);
+          fileDataInfo = await buildFileDataInfo(dataUrl, undefined, statusDraft.file.name);
+        } catch (error) {
+          console.warn('Status image analysis preparation failed', error);
+          scanNote = 'The image could not be decoded for a visual scan; only the caption and file metadata were analyzed.';
+        }
+      } else if (statusDraft.type === 'video') {
+        const frame = await captureVideoFrame(statusDraft.file);
+        if (frame) {
+          try {
+            fileDataInfo = await buildFileDataInfo(frame, undefined, 'status-frame.jpg');
+          } catch (error) {
+            console.warn('Status video frame analysis failed', error);
+            scanNote = 'The video frame could not be prepared for a visual scan; only the caption and file metadata were analyzed.';
+          }
+        } else {
+          scanNote = 'This browser could not decode a frame of the video, so only the caption and file metadata were analyzed.';
+        }
+      }
+    }
+
+    const describedContent = caption || (statusDraft?.file ? `Status ${statusDraft.type}: ${statusDraft.file.name}` : 'Status update');
+    const analysis = await SecurityService.analyzeMessage(describedContent, fileDataInfo);
+    if (!scanNote) return analysis;
+
+    return {
+      ...analysis,
+      points: [...(analysis.points || []), scanNote],
     };
-    
-    performUpload();
+  };
+
+  const postStatus = async () => {
+    if (!user || !statusDraft || isPostingStatus) return;
+    if (statusDraft.type === 'text' && !statusCaption.trim()) return;
+
+    setIsPostingStatus(true);
+    setStatusPostError(null);
+    setStatusScan(null);
+    setStatusScanning(true);
+
+    try {
+      const analysis = await analyzeStatusContent();
+      setStatusScan(analysis);
+
+      // A real threat verdict blocks publishing. An unavailable scan does not,
+      // but the status is still labelled as unverified.
+      if (analysis.isAnalyzed && !analysis.isSafe) {
+        setStatusPostError('Security analysis flagged this status, so it was not posted. Remove the content or try another file.');
+        return;
+      }
+
+      let mediaUrl = '';
+      if (statusDraft.file) {
+        let blobData: Blob = statusDraft.file;
+        if (statusDraft.type === 'image') {
+          try {
+            const base64Data = await readFileAsDataUrl(statusDraft.file);
+            const resizedBase64 = await resizeImage(base64Data);
+            blobData = await (await fetch(resizedBase64)).blob();
+          } catch (error) {
+            console.warn('Status image resize skipped', error);
+          }
+        }
+        const { fileUrl } = await uploadMediaToSecureStorage(blobData, {
+          fileName: statusDraft.file.name,
+          purpose: 'status',
+          contentType: blobData.type || statusDraft.file.type,
+        });
+        mediaUrl = fileUrl;
+      }
+
+      const createdAt = Timestamp.now();
+      const statusRef = doc(collection(db, 'status_updates'));
+      const newStatus: StatusUpdate = {
+        id: statusRef.id,
+        userId: user.email || user.uid,
+        mediaUrl,
+        type: statusDraft.type,
+        text: statusCaption.trim(),
+        timestamp: createdAt,
+        expiresAt: Timestamp.fromMillis(createdAt.toMillis() + statusDurationHours * 60 * 60 * 1000),
+        durationHours: statusDurationHours,
+        privacy: statusPrivacy,
+        securityStatus: analysis,
+        authorName: profile?.displayName || user.displayName || user.email || 'You',
+        authorPhoto: profile?.photoURL || user.photoURL || '',
+      };
+
+      await setDoc(statusRef, newStatus);
+
+      setLocalStatusUpdates(prev => [{ ...newStatus }, ...prev]);
+      setTimeout(() => setLocalStatusUpdates(prev => prev.filter(s => s.id !== statusRef.id)), 4000);
+
+      // Show the published status (and its security report) right away.
+      setViewingStatus(newStatus);
+      closeStatusComposer();
+      setStatusClock(Date.now());
+      showToast(`Status posted for ${statusDurationHours}h • ${analysis.isAnalyzed ? `${analysis.score}/100 safe` : 'scan unavailable'}`);
+    } catch (error: any) {
+      console.error('Status upload failed:', error);
+      setStatusPostError(error?.message || 'Status upload failed. Please try again.');
+    } finally {
+      setIsPostingStatus(false);
+      setStatusScanning(false);
+    }
   };
 
   const cancelStatusUpload = (tempId: string) => {
@@ -1055,7 +1215,7 @@ export default function App() {
       orderBy('timestamp', 'desc')
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msTimeLimit = Date.now() - 24 * 60 * 60 * 1000;
+      const now = Date.now();
       const updates = snapshot.docs.map(doc => {
         const data = doc.data();
         if (data.uploading) delete data.uploading;
@@ -1065,7 +1225,9 @@ export default function App() {
           uploading: false
         } as unknown as StatusUpdate;
       }).filter(status => {
-        if (!status.timestamp || status.timestamp.toMillis() <= msTimeLimit) return false;
+        // Each status expires on its own schedule (8h / 24h / 48h), not a fixed day.
+        const expiry = statusExpiryMs(status);
+        if (!expiry || expiry <= now) return false;
         if (status.userId === user.email || status.userId === user.uid) return true;
         if (status.privacy === 'me') return false;
         if (status.privacy === 'contacts' || status.privacy === 'except') {
@@ -4699,16 +4861,13 @@ export default function App() {
       </button>
 
       <button 
-        onClick={() => showComingSoonNotice('Status')}
+        onClick={() => setActiveSection('status')}
         title={t.statusText || 'Status'}
         className={cn(
           "flex flex-col items-center gap-1 transition-all duration-300 relative",
           activeSection === 'status' ? "text-emerald-500 scale-110" : "text-zinc-500 hover:text-zinc-300"
         )}
       >
-        <span className="absolute -top-2 -right-6 z-10">
-          <ComingSoonBadge compact />
-        </span>
         <div className={cn(
           "p-2 rounded-xl transition-all overflow-hidden",
           activeSection === 'status' && theme === 'glow' && "glow-emerald-side animate-glow"
@@ -6277,34 +6436,86 @@ export default function App() {
               </button>
             </div>
             
-            <div className="w-full max-w-md h-full max-h-[85vh] bg-black rounded-3xl overflow-hidden relative shadow-2xl border border-white/10">
+            <div className="w-full max-w-md h-full max-h-[78vh] bg-black rounded-3xl overflow-hidden relative shadow-2xl border border-white/10 flex items-center justify-center">
               {viewingStatus.type === 'image' ? (
                 <img src={viewingStatus.mediaUrl} className="w-full h-full object-contain" alt="Status view" />
+              ) : viewingStatus.type === 'video' ? (
+                <video src={viewingStatus.mediaUrl} className="w-full h-full object-contain" autoPlay controls playsInline />
               ) : (
-                <video src={viewingStatus.mediaUrl} className="w-full h-full object-contain" autoPlay controls />
+                <div className="w-full h-full bg-gradient-to-br from-emerald-500 to-teal-800 flex items-center justify-center p-6">
+                  <p className="text-white text-lg font-semibold text-center break-words whitespace-pre-wrap">{viewingStatus.text}</p>
+                </div>
               )}
             </div>
-            <div className="absolute bottom-10 flex flex-col items-center opacity-70">
-              <span className="text-white font-medium text-sm">{viewingStatus.userId}</span>
-              <span className="text-white/60 text-xs mt-1">{viewingStatus.timestamp && typeof viewingStatus.timestamp.toDate === 'function' ? format(viewingStatus.timestamp.toDate(), 'PP p') : 'Just now'}</span>
+
+            <div className="w-full max-w-md mt-4 space-y-2">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-white font-medium text-sm truncate">
+                    {viewingStatus.userId === user?.email || viewingStatus.userId === user?.uid
+                      ? 'My Status'
+                      : (viewingStatus.authorName || viewingStatus.userId)}
+                  </p>
+                  <p className="text-white/50 text-xs mt-0.5">
+                    {viewingStatus.timestamp && typeof viewingStatus.timestamp.toDate === 'function' ? format(viewingStatus.timestamp.toDate(), 'PP p') : 'Just now'}
+                    {' • '}{formatStatusTimeLeft(statusExpiryMs(viewingStatus), statusClock)}
+                  </p>
+                </div>
+                {viewingStatus.securityStatus && (
+                  <span className={cn(
+                    "shrink-0 px-2 py-1 rounded-full text-[10px] font-bold flex items-center gap-1",
+                    viewingStatus.securityStatus.isAnalyzed
+                      ? (viewingStatus.securityStatus.isSafe ? "bg-emerald-500/20 text-emerald-300" : "bg-red-500/20 text-red-300")
+                      : "bg-white/10 text-white/70"
+                  )}>
+                    {viewingStatus.securityStatus.isAnalyzed && !viewingStatus.securityStatus.isSafe
+                      ? <ShieldAlert className="w-3 h-3" />
+                      : <ShieldCheck className="w-3 h-3" />}
+                    {viewingStatus.securityStatus.isAnalyzed
+                      ? (viewingStatus.securityStatus.isSafe ? `Safe • ${viewingStatus.securityStatus.score}/100` : `Threat • ${viewingStatus.securityStatus.score}/100`)
+                      : 'Not scanned'}
+                  </span>
+                )}
+              </div>
+
+              {viewingStatus.text && viewingStatus.type !== 'text' && (
+                <p className="text-white/80 text-sm">{viewingStatus.text}</p>
+              )}
+
+              {viewingStatus.securityStatus && (
+                <div className="rounded-2xl bg-white/10 p-3 text-[11px] text-white/70 space-y-1 max-h-32 overflow-y-auto">
+                  <p className="text-white/90 font-semibold flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5" /> Security report
+                  </p>
+                  <p>{viewingStatus.securityStatus.summary}</p>
+                  {viewingStatus.securityStatus.steganographyReport && viewingStatus.securityStatus.steganographyReport !== 'N/A' && (
+                    <p><span className="font-semibold text-white/80">Steganography:</span> {viewingStatus.securityStatus.steganographyReport}</p>
+                  )}
+                  {viewingStatus.securityStatus.points?.slice(0, 3).map((point, idx) => (
+                    <p key={idx}>• {point}</p>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
       <div className="max-w-2xl mx-auto w-full space-y-8 relative z-10">
-        <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold text-zinc-900">Updates & Status</h2>
-          <ComingSoonBadge />
+        <div>
+          <h2 className={cn("text-2xl font-bold", theme === 'glow' ? 'text-white' : 'text-zinc-900')}>Updates &amp; Status</h2>
+          <p className={cn("text-sm mt-1", theme === 'glow' ? 'text-emerald-500/70' : 'text-zinc-500')}>
+            Post a photo, video or text update. Every status is scanned for hidden payloads and phishing before it goes live, and it disappears when its timer ends.
+          </p>
         </div>
-        <p className="text-zinc-500 text-sm">Add a photo, video or text status. Status updates disappear after 24 hours.</p>
+
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-end gap-2 text-xs text-zinc-500">
             <span className="font-medium">Who can see:</span>
             <select 
               value={statusPrivacy} 
               onChange={(e) => setStatusPrivacy(e.target.value as any)}
-              className="bg-zinc-100 border-none text-zinc-700 text-xs rounded-full px-3 py-1 cursor-pointer outline-none focus:ring-2 focus:ring-emerald-500/50 appearance-none"
+              className={cn("border-none text-xs rounded-full px-3 py-1 cursor-pointer outline-none focus:ring-2 focus:ring-emerald-500/50 appearance-none", theme === 'glow' ? "bg-emerald-900/60 text-emerald-100" : "bg-zinc-100 text-zinc-700")}
             >
               <option value="everyone">Everyone</option>
               <option value="contacts">My Contacts</option>
@@ -6312,77 +6523,289 @@ export default function App() {
               <option value="me">Only Me</option>
             </select>
           </div>
-          <div className="flex items-center gap-4 p-4 rounded-3xl border border-dashed border-zinc-200 relative overflow-hidden">
-            <label
-              className={cn("relative w-14 h-14 cursor-pointer rounded-full flex items-center justify-center transition-all shadow-sm shrink-0", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}
-              onClick={(e) => {
-                e.preventDefault();
-                showComingSoonNotice('Status uploads');
-              }}
-            >
-              <span className="absolute -top-2 -right-4 z-10">
-                <ComingSoonBadge compact />
-              </span>
-              <input type="file" accept="image/*,video/*" className="hidden" onChange={handleStatusUpload} disabled />
-              <Plus className="w-6 h-6" />
-            </label>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-bold text-sm">My Status</h3>
-                <ComingSoonBadge compact />
+          <div className={cn("p-5 rounded-3xl border flex flex-col gap-4", theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50/70 border-zinc-100")}>
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={() => openStatusComposer(undefined, true)}
+                className={cn("relative w-16 h-16 shrink-0 rounded-full flex items-center justify-center overflow-hidden shadow-sm transition-all hover:scale-105", theme === 'glow' ? "bg-emerald-500 text-white" : "bg-emerald-100 text-emerald-600 hover:bg-emerald-200")}
+                title="Create a text status"
+              >
+                {(profile?.photoURL || user?.photoURL) ? (
+                  <img src={profile?.photoURL || user?.photoURL || ''} alt="My status" className="w-full h-full object-cover" />
+                ) : (
+                  <Plus className="w-6 h-6" />
+                )}
+                <span className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center border-2 border-white">
+                  <Plus className="w-3 h-3" />
+                </span>
+              </button>
+              <div className="flex-1 min-w-0">
+                <h3 className={cn("font-bold text-sm", theme === 'glow' ? 'text-white' : 'text-zinc-900')}>My Status</h3>
+                <p className="text-xs text-zinc-500">Pick 8h, 24h or 48h — it expires on its own.</p>
               </div>
-              <p className="text-xs text-zinc-500">Tap + to add photo or video status</p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex items-center justify-center gap-2 py-2.5 rounded-2xl text-xs font-bold cursor-pointer bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm shadow-emerald-500/20 transition-all">
+                <ImageIcon className="w-4 h-4" /> Photo / video
+                <input type="file" accept="image/*,video/*" className="hidden" onChange={handleStatusUpload} />
+              </label>
+              <button
+                type="button"
+                onClick={() => openStatusComposer(undefined, true)}
+                className={cn("flex items-center justify-center gap-2 py-2.5 rounded-2xl text-xs font-bold transition-all", theme === 'glow' ? "bg-emerald-900/60 text-emerald-100 hover:bg-emerald-900" : "bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100")}
+              >
+                <FileText className="w-4 h-4" /> Text status
+              </button>
             </div>
           </div>
         </div>
         <div className="space-y-4">
-          <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Recent Updates</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Recent Updates</h3>
+            {visibleStatuses.length > 0 && (
+              <span className="text-[10px] font-bold text-zinc-400">{visibleStatuses.length} live</span>
+            )}
+          </div>
           
-          {allStatuses.length === 0 ? (
-            <div className="p-8 text-center text-zinc-500 text-sm border rounded-3xl border-zinc-100 bg-zinc-50">
-              No recent updates from your secure contacts.
+          {visibleStatuses.length === 0 ? (
+            <div className={cn("p-8 text-center text-sm rounded-3xl border", theme === 'glow' ? "border-emerald-500/20 bg-emerald-900/10 text-emerald-500/70" : "border-zinc-100 bg-zinc-50 text-zinc-500")}>
+              No live updates. Post the first status, or add contacts to see theirs.
             </div>
           ) : (
-            <div className="flex gap-4 overflow-x-auto pb-4 hide-scrollbar">
-              {allStatuses.map((status: any) => {
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {visibleStatuses.map((status) => {
                 const isMe = status.userId === user?.email || status.userId === user?.uid;
-                const author = isMe ? "My Status" : syncedContacts.find(c => c.email === status.userId || c.uid === status.userId)?.displayName || status.userId;
+                const author = isMe
+                  ? 'My Status'
+                  : status.authorName || syncedContacts.find(c => c.email === status.userId || c.uid === status.userId)?.displayName || status.userId;
+                const verdict = status.securityStatus;
                 return (
-                <div key={status.id} className="flex flex-col gap-1.5 items-center">
+                <div key={status.id} className="flex flex-col gap-1.5">
                   <div 
-                    className="relative w-24 h-32 flex-shrink-0 rounded-2xl overflow-hidden border-2 p-0.5 transition-all border-emerald-500 cursor-pointer hover:scale-105"
+                    role="button"
+                    tabIndex={0}
+                    className="relative h-40 w-full rounded-2xl overflow-hidden border-2 border-emerald-500/70 cursor-pointer transition-all hover:scale-[1.02] bg-zinc-900"
                     onClick={() => setViewingStatus(status)}
+                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setViewingStatus(status); }}
                   >
-                    <div className="w-full h-full rounded-xl overflow-hidden bg-zinc-100 relative">
-                      {status.type === 'image' ? (
-                        <img src={status.mediaUrl} alt="Status" className="w-full h-full object-cover" />
-                      ) : (
-                        <video src={status.mediaUrl} className="w-full h-full object-cover" autoPlay muted loop />
-                      )}
-                    </div>
-                    <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/60 rounded text-[8px] text-white backdrop-blur-md flex items-center gap-1">
-                      {status.timestamp && typeof status.timestamp.toDate === 'function' ? format(status.timestamp.toDate(), 'HH:mm') : 'Now'}
-                    </div>
-                    {(status.userId === user?.email || status.userId === user?.uid) && (
+                    {status.type === 'text' ? (
+                      <div className="w-full h-full bg-gradient-to-br from-emerald-500 to-teal-800 p-3 flex items-center justify-center">
+                        <p className="text-white text-xs font-semibold text-center line-clamp-6 break-words">{status.text}</p>
+                      </div>
+                    ) : status.type === 'image' ? (
+                      <img src={status.mediaUrl} alt="Status" className="w-full h-full object-cover" />
+                    ) : (
+                      <video src={status.mediaUrl} className="w-full h-full object-cover" autoPlay muted loop playsInline />
+                    )}
+
+                    {verdict && (
+                      <span className={cn(
+                        "absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-full text-[8px] font-bold backdrop-blur-md flex items-center gap-1",
+                        verdict.isAnalyzed
+                          ? (verdict.isSafe ? "bg-emerald-500/90 text-white" : "bg-red-500/90 text-white")
+                          : "bg-zinc-700/80 text-white"
+                      )}>
+                        {verdict.isAnalyzed && !verdict.isSafe ? <ShieldAlert className="w-2.5 h-2.5" /> : <ShieldCheck className="w-2.5 h-2.5" />}
+                        {verdict.isAnalyzed ? verdict.score : 'N/A'}
+                      </span>
+                    )}
+
+                    {isMe && (
                       <button
                         onClick={(e) => { 
                           e.stopPropagation(); 
                           if (status.uploading) cancelStatusUpload(status.id); 
                           else deleteStatus(status.id); 
                         }}
-                        className="absolute top-1 right-1 p-1 bg-black/60 text-white rounded hover:bg-red-500 transition-colors z-10"
+                        className="absolute top-1.5 right-1.5 p-1 bg-black/60 text-white rounded-full hover:bg-red-500 transition-colors z-10"
+                        aria-label="Delete status"
                       >
                         <X className="w-3 h-3" />
                       </button>
                     )}
+
+                    <div className="absolute bottom-0 inset-x-0 px-2 py-1.5 bg-gradient-to-t from-black/80 to-transparent flex items-center justify-between">
+                      <span className="text-[9px] text-white/90 font-semibold flex items-center gap-1">
+                        <Clock className="w-2.5 h-2.5" />{formatStatusTimeLeft(statusExpiryMs(status), statusClock)}
+                      </span>
+                      <span className="text-[9px] text-white/60">
+                        {status.timestamp && typeof status.timestamp.toDate === 'function' ? format(status.timestamp.toDate(), 'HH:mm') : 'Now'}
+                      </span>
+                    </div>
                   </div>
-                  <span className={cn("text-[10px] font-bold truncate w-24 text-center", theme === 'glow' ? "text-emerald-50" : "text-zinc-700")}>{author}</span>
+                  <span className={cn("text-[10px] font-bold truncate", theme === 'glow' ? "text-emerald-50" : "text-zinc-700")}>{author}</span>
                 </div>
               )})}
             </div>
           )}
         </div>
       </div>
+
+      {/* Status composer: choose lifetime, scan the content, then publish. */}
+      <AnimatePresence>
+        {statusDraft && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[220] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-zinc-200 max-h-[92vh] flex flex-col overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-100">
+                <div>
+                  <h3 className="font-bold text-zinc-900">New status</h3>
+                  <p className="text-[11px] text-zinc-500">Scanned before anyone can see it.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeStatusComposer}
+                  disabled={isPostingStatus}
+                  className="w-9 h-9 rounded-full bg-zinc-100 text-zinc-500 hover:bg-zinc-200 flex items-center justify-center disabled:opacity-40"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4 overflow-y-auto">
+                {statusDraft.file && statusDraft.previewUrl ? (
+                  <div className="w-full h-56 rounded-2xl overflow-hidden bg-zinc-900 flex items-center justify-center">
+                    {statusDraft.type === 'image' ? (
+                      <img src={statusDraft.previewUrl} alt="Status preview" className="w-full h-full object-contain" />
+                    ) : (
+                      <video src={statusDraft.previewUrl} className="w-full h-full object-contain" autoPlay muted loop playsInline controls />
+                    )}
+                  </div>
+                ) : (
+                  <div className="w-full h-40 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-800 p-4 flex items-center justify-center">
+                    <p className="text-white text-sm font-semibold text-center break-words whitespace-pre-wrap">
+                      {statusCaption.trim() || 'Type your status below'}
+                    </p>
+                  </div>
+                )}
+
+                <div>
+                  <textarea
+                    value={statusCaption}
+                    onChange={(e) => setStatusCaption(e.target.value.slice(0, 280))}
+                    placeholder={statusDraft.type === 'text' ? 'Write your status…' : 'Add a caption (optional)'}
+                    rows={statusDraft.type === 'text' ? 3 : 2}
+                    className="w-full rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-none"
+                  />
+                  <p className="text-[10px] text-zinc-400 text-right mt-1">{statusCaption.length}/280</p>
+                </div>
+
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-zinc-400 mb-2">Visible for</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[8, 24, 48].map((hours) => (
+                      <button
+                        key={hours}
+                        type="button"
+                        onClick={() => setStatusDurationHours(hours as 8 | 24 | 48)}
+                        className={cn(
+                          "py-2.5 rounded-2xl text-xs font-bold transition-all",
+                          statusDurationHours === hours
+                            ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30"
+                            : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                        )}
+                      >
+                        {hours} hours
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-bold uppercase tracking-widest text-zinc-400">Audience</p>
+                  <select
+                    value={statusPrivacy}
+                    onChange={(e) => setStatusPrivacy(e.target.value as any)}
+                    className="bg-zinc-100 text-zinc-700 text-xs rounded-full px-3 py-1.5 outline-none focus:ring-2 focus:ring-emerald-500/40 appearance-none cursor-pointer"
+                  >
+                    <option value="everyone">Everyone</option>
+                    <option value="contacts">My Contacts</option>
+                    <option value="except">My Contacts Except...</option>
+                    <option value="me">Only Me</option>
+                  </select>
+                </div>
+
+                <div className={cn(
+                  "rounded-2xl border p-3 text-xs space-y-1.5",
+                  statusPostError
+                    ? "border-red-200 bg-red-50 text-red-700"
+                    : statusScan
+                      ? (statusScan.isAnalyzed
+                          ? (statusScan.isSafe ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-700")
+                          : "border-amber-200 bg-amber-50 text-amber-800")
+                      : "border-zinc-200 bg-zinc-50 text-zinc-600"
+                )}>
+                  {statusScanning ? (
+                    <p className="flex items-center gap-2 font-semibold">
+                      <span className="w-3 h-3 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin" />
+                      {isPostingStatus ? 'Scanning, then uploading…' : 'Scanning for steganography and phishing…'}
+                    </p>
+                  ) : statusScan ? (
+                    <>
+                      <p className="flex items-center gap-2 font-bold">
+                        {statusScan.isAnalyzed && !statusScan.isSafe ? <ShieldAlert className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
+                        {statusScan.isAnalyzed
+                          ? (statusScan.isSafe ? `Safe content • ${statusScan.score}/100` : `Threat detected • ${statusScan.score}/100`)
+                          : 'Scan unavailable'}
+                      </p>
+                      <p>{statusScan.summary}</p>
+                      {statusScan.steganographyReport && statusScan.steganographyReport !== 'N/A' && (
+                        <p><span className="font-semibold">Steganography:</span> {statusScan.steganographyReport}</p>
+                      )}
+                      {statusScan.points?.slice(0, 3).map((point, idx) => (
+                        <p key={idx}>• {point}</p>
+                      ))}
+                    </>
+                  ) : (
+                    <p className="flex items-center gap-2 font-semibold">
+                      <ShieldCheck className="w-4 h-4" />
+                      Posting runs a steganography + phishing scan first. Content that fails is not published.
+                    </p>
+                  )}
+                  {statusPostError && <p className="font-bold">{statusPostError}</p>}
+                </div>
+              </div>
+
+              <div className="px-5 py-4 border-t border-zinc-100 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={closeStatusComposer}
+                  disabled={isPostingStatus}
+                  className="flex-1 py-3 rounded-2xl text-xs font-bold bg-zinc-100 text-zinc-600 hover:bg-zinc-200 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={postStatus}
+                  disabled={isPostingStatus || (statusDraft.type === 'text' && !statusCaption.trim())}
+                  className="flex-[2] py-3 rounded-2xl text-xs font-bold bg-emerald-500 text-white hover:bg-emerald-600 shadow-sm shadow-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isPostingStatus ? (
+                    <>
+                      <span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                      {statusScanning ? 'Analyzing…' : 'Uploading…'}
+                    </>
+                  ) : (
+                    <>Post for {statusDurationHours}h</>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
 
         ) : (
