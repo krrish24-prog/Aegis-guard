@@ -4268,28 +4268,49 @@ export default function App() {
   const groupMembers = useMemo(() => {
     if (!user || !selectedChat || selectedChat.type !== 'group') return [];
     const selfEmail = user.email?.toLowerCase() || '';
-    const seen = new Set<string>();
-    return (selectedChat.participants || [])
-      .filter((id) => {
-        if (!id || id.startsWith('temp-')) return false;
-        if (id === user.uid || id.toLowerCase() === selfEmail) return false;
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      })
-      .map((id) => {
-        const profile = allUsers.find((u) => u.uid === id || u.email?.toLowerCase() === id.toLowerCase())
-          || syncedContacts.find((c) => c.uid === id || c.email?.toLowerCase() === id.toLowerCase() || c.phoneNumber === id);
-        return {
-          id,
-          name: profile?.displayName || id,
-          email: profile?.email || (id.includes('@') ? id : ''),
-          photoURL: profile?.photoURL || '',
-          // Email-only members are resolved to a UID (via users_public) when the
-          // message is actually sent, so they stay selectable here.
-          resolvable: true,
-        };
+    const seenIdentifiers = new Set<string>();
+    const byIdentity = new Map<string, {
+      id: string;
+      name: string;
+      email: string;
+      photoURL: string;
+      resolvable: boolean;
+    }>();
+
+    for (const rawId of selectedChat.participants || []) {
+      const id = (rawId || '').trim();
+      if (!id || id.startsWith('temp-')) continue;
+      const lowerId = id.toLowerCase();
+      if (id === user.uid || lowerId === selfEmail) continue;
+      if (seenIdentifiers.has(lowerId)) continue;
+      seenIdentifiers.add(lowerId);
+
+      const profile = allUsers.find((u) => u.uid === id || u.email?.toLowerCase() === lowerId)
+        || syncedContacts.find((c) => c.uid === id || c.email?.toLowerCase() === lowerId || c.phoneNumber === id);
+
+      // Older chats can list the same person twice (once as a UID, once as an
+      // email). Collapse both entries into one row so the member list does not
+      // show duplicate labels.
+      const resolvedUid = profile?.uid && !profile.uid.includes('@') ? profile.uid : '';
+      const email = profile?.email?.toLowerCase() || (id.includes('@') ? lowerId : '');
+      const identity = (resolvedUid || email || lowerId).toLowerCase();
+      if (byIdentity.has(identity)) continue;
+      if (email && Array.from(byIdentity.values()).some((member) => member.email === email)) continue;
+
+      byIdentity.set(identity, {
+        // Prefer the UID so selections match the participant list used for
+        // encryption and visibility.
+        id: resolvedUid || id,
+        name: profile?.displayName || email || id,
+        email,
+        photoURL: profile?.photoURL || '',
+        // Email-only members are resolved to a UID (via users_public) when the
+        // message is actually sent, so they stay selectable here.
+        resolvable: true,
       });
+    }
+
+    return Array.from(byIdentity.values());
   }, [selectedChat, user, allUsers, syncedContacts]);
 
   const reportContent = showSecurityReport?.decryptedContent || '';
@@ -5778,7 +5799,7 @@ export default function App() {
 
                             {selectiveMode ? (
                               <>
-                                <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+                                <div className="max-h-52 overflow-y-auto overflow-x-hidden space-y-1 pr-1">
                                   {groupMembers.length === 0 && (
                                     <p className={cn("text-xs py-4 text-center", theme === 'light' ? "text-zinc-400" : "text-zinc-500")}>
                                       No other members in this group yet.
