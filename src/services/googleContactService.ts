@@ -5,6 +5,8 @@ import {
   setDoc,
   getDocs,
   getDoc,
+  limit,
+  query,
   serverTimestamp,
 } from "firebase/firestore";
 
@@ -32,7 +34,9 @@ export async function syncReciprocalContacts(
   email: string
 ): Promise<number> {
   const emailKey = (email || '').toLowerCase();
-  const publicSnap = await getDocs(collection(db, "users_public"));
+  // Bounded: this runs on every login and costs three reads per user, so an
+  // open-ended directory scan would quietly eat the free plan's daily reads.
+  const publicSnap = await getDocs(query(collection(db, "users_public"), limit(200)));
   let syncedCount = 0;
 
   for (const d of publicSnap.docs) {

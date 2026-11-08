@@ -99,3 +99,28 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   }
   console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
+
+/**
+ * Turns a Firestore SDK error into something a user can act on. The free plan
+ * reports "Quota exceeded." for both reads and writes, which used to be shown
+ * as if the security rules were wrong.
+ */
+export function describeFirestoreError(error: unknown): string {
+  const err = error as { code?: string; message?: string } | null;
+  const code = err?.code || '';
+  const message = err?.message || (error instanceof Error ? error.message : String(error));
+
+  if (code === 'resource-exhausted' || /quota/i.test(message)) {
+    return 'Firestore daily quota reached. The free plan allows 50,000 reads and 20,000 writes per day per project and resets at midnight Pacific time. Media files are stored in Backblaze B2, so only small records count; upgrading the Firebase project to the Blaze plan removes the daily cap.';
+  }
+  if (code === 'permission-denied') {
+    return 'Firestore denied this request. Deploy the latest security rules with "firebase deploy --only firestore:rules", then try again.';
+  }
+  if (code === 'unavailable') {
+    return 'Could not reach Firestore. Check the internet connection and try again.';
+  }
+  if (code === 'failed-precondition') {
+    return 'Firestore needs an index for this query. Deploy firestore.indexes.json or wait for the index build to finish.';
+  }
+  return message;
+}

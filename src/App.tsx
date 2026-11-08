@@ -8,7 +8,8 @@ import {
   auth, 
   db, 
   OperationType, 
-  handleFirestoreError 
+  handleFirestoreError,
+  describeFirestoreError
 } from './firebase';
 import { 
   signOut, 
@@ -276,6 +277,9 @@ const formatStatusTimeLeft = (expiryMs: number, now: number): string => {
 
 const clampStatusHours = (hours: number): number =>
   Number.isFinite(hours) ? Math.min(168, Math.max(1, Math.round(hours))) : 24;
+
+/** Recent status documents a feed listener may read in one go. */
+const STATUS_FEED_LIMIT = 50;
 
 const formatDurationSummary = (hours: number): string => {
   const safe = clampStatusHours(hours);
@@ -812,14 +816,35 @@ export default function App() {
   const [statusScanning, setStatusScanning] = useState(false);
   const [isPostingStatus, setIsPostingStatus] = useState(false);
   const [statusPostError, setStatusPostError] = useState<string | null>(null);
-  const [statusFeedError, setStatusFeedError] = useState<string | null>(null);
+  const [statusFeedError, setStatusFeedError] = useState<{ message: string; quota: boolean } | null>(null);
+  const [statusFeedRetry, setStatusFeedRetry] = useState(0);
   const [statusClock, setStatusClock] = useState(Date.now());
+  const [syncedContacts, setSyncedContacts] = useState<UserProfile[]>([]);
+
+  // Audience filtering happens here, not inside the Firestore listener: keeping
+  // it out of the listener means a contacts change no longer tears the feed
+  // down and re-reads every status document from the server.
+  const audienceStatuses = useMemo(() => {
+    if (!user) return statusUpdates;
+    const myKeys = [user.uid, user.email?.toLowerCase()].filter(Boolean) as string[];
+    return statusUpdates.filter((status) => {
+      const author = (status.userId || '').toLowerCase();
+      if (myKeys.includes(author)) return true;
+      if (status.privacy === 'me') return false;
+      if (status.privacy === 'contacts' || status.privacy === 'except') {
+        return syncedContacts.some(c =>
+          (c.uid || '').toLowerCase() === author || (c.email || '').toLowerCase() === author
+        );
+      }
+      return true;
+    });
+  }, [statusUpdates, syncedContacts, user]);
 
   const allStatuses = useMemo(() => {
-    const combined = [...localStatusUpdates, ...statusUpdates];
+    const combined = [...localStatusUpdates, ...audienceStatuses];
     const unique = Array.from(new Map(combined.map(s => [s.id, s])).values());
     return unique.sort((a, b) => (b.timestamp?.toMillis() || Date.now()) - (a.timestamp?.toMillis() || Date.now()));
-  }, [localStatusUpdates, statusUpdates]);
+  }, [localStatusUpdates, audienceStatuses]);
 
   // Statuses disappear the moment their chosen lifetime (8h/24h/48h) runs out.
   const visibleStatuses = useMemo(
@@ -1238,19 +1263,24 @@ export default function App() {
   const [emailInputSearch, setEmailInputSearch] = useState('');
   const [emailContactName, setEmailContactName] = useState('');
   const [emailContactPhone, setEmailContactPhone] = useState('');
+  const [contactAddError, setContactAddError] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
   const [allContacts, setAllContacts] = useState<UserProfile[]>([]);
-  const [syncedContacts, setSyncedContacts] = useState<UserProfile[]>([]);
   const [chatResetTimestamps, setChatResetTimestamps] = useState<Record<string, Timestamp>>({});
 
   useEffect(() => {
     if (!user) return;
+    // Only the newest statuses are read. The old query had no limit, so every
+    // listener attach read the entire collection (which also grew forever,
+    // because expired statuses are never deleted) and the free plan's daily
+    // read quota ran out. The feed only shows live statuses anyway, so a
+    // bounded window loses nothing.
     const q = query(
       collection(db, 'status_updates'),
-      orderBy('timestamp', 'desc')
+      orderBy('timestamp', 'desc'),
+      limit(STATUS_FEED_LIMIT)
     );
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const now = Date.now();
       const updates = snapshot.docs.map(doc => {
         const data = doc.data();
         if (data.uploading) delete data.uploading;
@@ -1259,28 +1289,25 @@ export default function App() {
           ...data,
           uploading: false
         } as unknown as StatusUpdate;
-      }).filter(status => {
-        // Each status expires on its own schedule (8h / 24h / 48h), not a fixed day.
-        const expiry = statusExpiryMs(status);
-        if (!expiry || expiry <= now) return false;
-        if (status.userId === user.email || status.userId === user.uid) return true;
-        if (status.privacy === 'me') return false;
-        if (status.privacy === 'contacts' || status.privacy === 'except') {
-           const isContact = syncedContacts.some(c => c.email === status.userId || c.uid === status.userId);
-           if (!isContact) return false;
-        }
-        return true;
       });
+      // Expiry and audience are applied client-side (see visibleStatuses /
+      // audienceStatuses), so one snapshot can be reused across renders.
       setStatusUpdates(updates);
       setStatusFeedError(null);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'status_updates');
-      // A denied or failed query used to fail silently, which looks exactly like
-      // "nobody can see my status". Surface it on the page instead.
-      setStatusFeedError(error instanceof Error ? error.message : String(error));
+      // A denied, quota-blocked or failed query used to fail silently, which
+      // looks exactly like "nobody can see my status". Surface it on the page.
+      const code = (error as { code?: string })?.code || '';
+      setStatusFeedError({
+        message: describeFirestoreError(error),
+        quota: code === 'resource-exhausted' || /quota/i.test((error as Error)?.message || ''),
+      });
     });
     return unsubscribe;
-  }, [user, syncedContacts]);
+    // A failed listener stops for good, so the banner's retry button bumps this
+    // counter to attach a fresh listener (for example after the daily quota reset).
+  }, [user, statusFeedRetry]);
 
   // Load contacts
   useEffect(() => {
@@ -1345,9 +1372,10 @@ export default function App() {
     };
   }, [user]);
 
-  const handleSaveContact = async (contact: Partial<UserProfile>) => {
+  const handleSaveContact = async (contact: Partial<UserProfile>): Promise<string | null> => {
     const userIdentifier = user?.uid;
-    if (!userIdentifier) return;
+    if (!userIdentifier) return null;
+    setContactAddError(null);
     try {
       // Use uid from contact data, or id, or doc ID fallback
       const targetId = (contact.uid || contact.id || '').startsWith('temp-')
@@ -1368,7 +1396,9 @@ export default function App() {
 
       await setDoc(contactRef, contactData, { merge: true });
 
-      // Write reciprocal contact so the other user sees us automatically
+      // Write reciprocal contact so the other user sees us automatically. The
+      // contact already exists in the user's own list at this point, so a
+      // rejected reciprocation must not report the whole add as failed.
       if (targetId && profile) {
         const reciprocalData = {
           uid: user.uid,
@@ -1380,15 +1410,23 @@ export default function App() {
           createdAt: serverTimestamp(),
           source: 'reciprocal_auto',
         };
-        await setDoc(
-          doc(db, 'users', targetId, 'contacts', userIdentifier),
-          reciprocalData,
-          { merge: true }
-        );
+        try {
+          await setDoc(
+            doc(db, 'users', targetId, 'contacts', userIdentifier),
+            reciprocalData,
+            { merge: true }
+          );
+        } catch (reciprocalError) {
+          console.warn('Reciprocal contact write skipped', reciprocalError);
+        }
       }
       return contactRef.id;
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `users/${userIdentifier}/contacts`);
+      // Never fail silently: the dialog used to close and drop the contact, so
+      // a quota or rules rejection looked like the button did nothing.
+      setContactAddError(describeFirestoreError(err));
+      return null;
     }
   };
   const [editDisplayName, setEditDisplayName] = useState('');
@@ -5028,7 +5066,7 @@ export default function App() {
 
                 <div className="flex gap-2">
                   <button 
-                    onClick={() => setShowNewChat(true)}
+                    onClick={() => { setShowNewChat(true); setContactAddError(null); }}
                     className={cn(
                       "flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2",
                       theme === 'glow' ? "bg-emerald-900/40 text-emerald-500 hover:bg-emerald-900/60" : "bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
@@ -6351,7 +6389,7 @@ export default function App() {
                 />
               </div>
               <button 
-                onClick={() => setShowNewChat(true)}
+                onClick={() => { setShowNewChat(true); setContactAddError(null); }}
                 className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-all flex items-center gap-2"
               >
                 <UserPlus className="w-4 h-4" />
@@ -6603,9 +6641,23 @@ export default function App() {
         </div>
         {statusFeedError && (
           <div className="p-3 rounded-2xl border border-red-200 bg-red-50 text-red-700 text-xs space-y-1">
-            <p className="font-bold flex items-center gap-1.5"><ShieldAlert className="w-3.5 h-3.5" /> Status feed blocked by Firestore</p>
-            <p className="break-words">{statusFeedError}</p>
-            <p>Deploy the rules with <span className="font-mono">firebase deploy --only firestore:rules</span>.</p>
+            <p className="font-bold flex items-center gap-1.5">
+              <ShieldAlert className="w-3.5 h-3.5" />
+              {statusFeedError.quota
+                ? 'Status feed paused — Firestore daily quota reached'
+                : 'Status feed blocked by Firestore'}
+            </p>
+            <p className="break-words">{statusFeedError.message}</p>
+            {!statusFeedError.quota && (
+              <p>Deploy the rules with <span className="font-mono">firebase deploy --only firestore:rules</span>.</p>
+            )}
+            <button
+              type="button"
+              onClick={() => { setStatusFeedError(null); setStatusFeedRetry(n => n + 1); }}
+              className="mt-1 px-3 py-1.5 rounded-full bg-white border border-red-200 text-red-700 font-bold hover:bg-red-100 transition-all"
+            >
+              Retry
+            </button>
           </div>
         )}
 
@@ -7142,7 +7194,7 @@ export default function App() {
                           theme === 'glow' ? "text-emerald-500/50" : "text-zinc-400"
                         )}>Account Actions</h3>
                         <div className="space-y-3">
-                          <button onClick={() => { setShowSettings(false); setActiveSection('contacts'); setShowNewChat(true); }} className={cn(
+                          <button onClick={() => { setShowSettings(false); setActiveSection('contacts'); setShowNewChat(true); setContactAddError(null); }} className={cn(
                             "w-full p-4 rounded-2xl border flex items-center gap-3 transition-all",
                             theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20 hover:bg-emerald-900/30" : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
                           )}>
@@ -7544,15 +7596,23 @@ export default function App() {
                   setEmailContactPhone('');
                   setKeypadInput('');
                   setKeypadName('');
+                  setContactAddError(null);
                 }} className="text-zinc-400 hover:text-zinc-600">
                   <XCircle className="w-6 h-6" />
                 </button>
               </div>
               <div className="flex border-b border-zinc-100">
-                <button onClick={() => setAddContactOption('search')} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'search' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Search</button>
-                <button onClick={() => setAddContactOption('keypad')} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'keypad' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Keypad</button>
-                <button onClick={() => setAddContactOption('email')} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'email' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Email</button>
+                <button onClick={() => { setAddContactOption('search'); setContactAddError(null); }} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'search' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Search</button>
+                <button onClick={() => { setAddContactOption('keypad'); setContactAddError(null); }} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'keypad' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Keypad</button>
+                <button onClick={() => { setAddContactOption('email'); setContactAddError(null); }} className={cn("flex-1 py-3 text-sm font-bold border-b-2", addContactOption === 'email' ? "border-emerald-500 text-emerald-600" : "border-transparent text-zinc-500 hover:bg-zinc-50")}>Email</button>
               </div>
+
+              {contactAddError && (
+                <div className="mx-4 mt-3 p-3 rounded-2xl border border-red-200 bg-red-50 text-red-700 text-xs space-y-1">
+                  <p className="font-bold flex items-center gap-1.5"><ShieldAlert className="w-3.5 h-3.5" /> Could not add this contact</p>
+                  <p className="break-words">{contactAddError}</p>
+                </div>
+              )}
 
               {addContactOption === 'search' && (
                 <div className="p-4">
@@ -7581,7 +7641,7 @@ export default function App() {
                           <p className="text-xs text-zinc-400">Would you like to start a secure chat anyway?</p>
                         </div>
                         <button 
-                          onClick={() => {
+                          onClick={async () => {
                             const trimmedSearchQuery = userSearchQuery.trim().toLowerCase();
                             const isEmail = /\S+@\S+\.\S+/.test(trimmedSearchQuery);
                             const isPhone = /^\+?[\d\s-]{10,}$/.test(trimmedSearchQuery);
@@ -7595,12 +7655,13 @@ export default function App() {
                                 photoURL: '',
                                 publicKey: ''
                               } as UserProfile;
-                              handleSaveContact(newContact);
-                              startNewChat(newContact);
+                              const savedContactId = await handleSaveContact(newContact);
+                              if (!savedContactId) return;
+                              await startNewChat(newContact);
                               setShowNewChat(false);
                               setUserSearchQuery('');
                             } else {
-                              alert("Please enter a valid email or phone number.");
+                              setContactAddError('Please enter a valid email or phone number.');
                             }
                           }}
                           className="px-6 py-2 bg-emerald-500 text-white rounded-full text-sm font-bold hover:bg-emerald-600 transition-all"
@@ -7619,7 +7680,8 @@ export default function App() {
                       <button
                         key={`${u.uid}-${i}`}
                         onClick={async () => {
-                          await handleSaveContact(u);
+                          const savedContactId = await handleSaveContact(u);
+                          if (!savedContactId) return;
                           await startNewChat(u);
                           setShowNewChat(false);
                           setUserSearchQuery('');
@@ -7672,7 +7734,8 @@ export default function App() {
                             photoURL: '',
                             publicKey: ''
                           };
-                          await handleSaveContact(newContact);
+                          const savedContactId = await handleSaveContact(newContact);
+                          if (!savedContactId) return;
                           await startNewChat(newContact as UserProfile);
                           setShowNewChat(false);
                           setKeypadInput('');
@@ -7737,32 +7800,39 @@ export default function App() {
                     disabled={!emailInputSearch.includes('@')}
                     onClick={async () => {
                         const trimmedEmail = emailInputSearch.trim().toLowerCase();
-                        const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', trimmedEmail), limit(1)));
-                        if (snap.empty) {
-                          alert('This email is not registered in Aegis Guard yet.');
-                          return;
+                        setContactAddError(null);
+                        try {
+                          const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', trimmedEmail), limit(1)));
+                          if (snap.empty) {
+                            setContactAddError(`No Aegis Guard account is registered with ${trimmedEmail}. Ask them to create an account first, then add them here.`);
+                            return;
+                          }
+                          const foundUser = snap.docs[0].data() as UserProfile;
+                          const newContact = {
+                            uid: snap.docs[0].id,
+                            ...foundUser,
+                            displayName: emailContactName.trim() || foundUser.displayName || trimmedEmail.split('@')[0],
+                            phoneNumber: emailContactPhone.trim() || foundUser.phoneNumber || '',
+                            email: trimmedEmail
+                          } as UserProfile;
+                          const savedContactId = await handleSaveContact(newContact);
+                          if (!savedContactId) return;
+                          setSyncedContacts(prev => [
+                            newContact,
+                            ...prev.filter(c =>
+                              (c.uid || c.id) !== newContact.uid &&
+                              c.email?.toLowerCase() !== trimmedEmail
+                            )
+                          ]);
+                          await startNewChat(newContact);
+                          setShowNewChat(false);
+                          setEmailInputSearch('');
+                          setEmailContactName('');
+                          setEmailContactPhone('');
+                        } catch (error) {
+                          handleFirestoreError(error, OperationType.LIST, 'users_public');
+                          setContactAddError(describeFirestoreError(error));
                         }
-                        const foundUser = snap.docs[0].data() as UserProfile;
-                        const newContact = {
-                          uid: snap.docs[0].id,
-                          ...foundUser,
-                          displayName: emailContactName.trim() || foundUser.displayName || trimmedEmail.split('@')[0],
-                          phoneNumber: emailContactPhone.trim() || foundUser.phoneNumber || '',
-                          email: trimmedEmail
-                        } as UserProfile;
-                        await handleSaveContact(newContact);
-                        setSyncedContacts(prev => [
-                          newContact,
-                          ...prev.filter(c =>
-                            (c.uid || c.id) !== newContact.uid &&
-                            c.email?.toLowerCase() !== trimmedEmail
-                          )
-                        ]);
-                        await startNewChat(newContact);
-                        setShowNewChat(false);
-                        setEmailInputSearch('');
-                        setEmailContactName('');
-                        setEmailContactPhone('');
                     }}
                     className="w-full py-3.5 mt-auto shrink-0 bg-emerald-500 text-white font-bold rounded-2xl hover:bg-emerald-600 active:scale-95 transition-all outline-none disabled:opacity-50"
                   >
