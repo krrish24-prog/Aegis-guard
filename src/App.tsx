@@ -323,6 +323,13 @@ interface Message {
   deletedBy?: string;
   decryptedVoiceUrl?: string;
   type?: 'text' | 'voice' | 'file' | 'image';
+  /** UIDs allowed to read a selective-recipient message. */
+  visibleTo?: string[];
+  isPrivate?: boolean;
+  /** Number of members (excluding the sender) the private message was sent to. */
+  recipientCount?: number;
+  /** Subcollection this message lives in; set while loading. */
+  source?: 'messages' | 'private_messages';
 }
 
 interface StatusUpdate {
@@ -1288,6 +1295,10 @@ export default function App() {
   const [isUserAdmin, setIsUserAdmin] = useState(false);
   const [activeMessageActions, setActiveMessageActions] = useState<string | null>(null);
   const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
+  // Selective recipient picker (group chats only).
+  const [showRecipientPicker, setShowRecipientPicker] = useState(false);
+  const [selectiveMode, setSelectiveMode] = useState(false);
+  const [selectedRecipientIds, setSelectedRecipientIds] = useState<string[]>([]);
   const [showForwardModal, setShowForwardModal] = useState<Message | null>(null);
   const [replyToMessage, setReplyToMessage] = useState<Message | null>(null);
   const [messageSearchResults, setMessageSearchResults] = useState<Array<{ chatId: string; messageId: string; preview: string; senderId: string }>>([]);
@@ -2025,8 +2036,16 @@ export default function App() {
       const messagesQuery = collection(db, 'conversations', selectedChatId, 'messages');
       const snapshot = await getDocs(messagesQuery);
       console.log("clearChat: Found", snapshot.size, "messages");
-      
-      const docs = snapshot.docs;
+
+      // Selective-recipient messages are only cleared by their own recipients.
+      const privateSnapshot = user
+        ? await getDocs(query(
+            collection(db, 'conversations', selectedChatId, 'private_messages'),
+            where('visibleTo', 'array-contains', user.uid),
+          )).catch(() => null)
+        : null;
+
+      const docs = [...snapshot.docs, ...(privateSnapshot?.docs || [])];
       for (let i = 0; i < docs.length; i += 500) {
         const batch = writeBatch(db);
         docs.slice(i, i + 500).forEach(doc => batch.delete(doc.ref));
@@ -2051,7 +2070,7 @@ export default function App() {
     const starredBy = msg.starredBy || [];
     const isStarred = starredBy.includes(user.email);
     
-    const msgRef = doc(db, 'conversations', selectedChatId, 'messages', msgId);
+    const msgRef = doc(db, 'conversations', selectedChatId, msg.source || 'messages', msgId);
     try {
       if (isStarred) {
         await updateDoc(msgRef, {
@@ -2068,27 +2087,53 @@ export default function App() {
     }
   };
 
+  const startReply = (msg: Message) => {
+    setReplyToMessage(msg);
+    // Replying to a private message stays private to the same members so the
+    // quoted preview cannot become visible to the whole group.
+    if (msg.isPrivate && user) {
+      const recipients = (msg.visibleTo || [])
+        .filter((id) => id !== user.uid && groupMembers.some((member) => member.id === id));
+      if (recipients.length > 0) {
+        setSelectiveMode(true);
+        setSelectedRecipientIds(recipients);
+        setShowRecipientPicker(true);
+        showToast('Reply will stay private to the same members');
+      }
+    }
+    setActiveMessageActions(null);
+  };
+
   const handleMessageReaction = async (msgId: string, emoji: string) => {
     if (!selectedChatId || !user) return;
     const msg = messages.find(m => m.id === msgId);
-    await MessageEnhancementsService.toggleReaction(selectedChatId, msgId, user.uid, emoji, msg?.reactions);
+    await MessageEnhancementsService.toggleReaction(
+      selectedChatId, msgId, user.uid, emoji, msg?.reactions, msg?.source || 'messages'
+    );
   };
 
   const handlePinMessage = async (msgId: string) => {
     if (!selectedChatId || !user) return;
-    await MessageEnhancementsService.pinMessage(selectedChatId, msgId, user.uid);
+    const msg = messages.find(m => m.id === msgId);
+    await MessageEnhancementsService.pinMessage(selectedChatId, msgId, user.uid, msg?.source || 'messages');
     setActiveMessageActions(null);
   };
 
   const handleUnpinMessage = async (msgId: string) => {
     if (!selectedChatId) return;
-    await MessageEnhancementsService.unpinMessage(selectedChatId, msgId);
+    const msg = messages.find(m => m.id === msgId);
+    await MessageEnhancementsService.unpinMessage(selectedChatId, msgId, msg?.source || 'messages');
     setActiveMessageActions(null);
   };
 
   const handleForwardMessage = async (targetChatId: string) => {
     if (!showForwardModal || !selectedChatId || !user) return;
     const msg = showForwardModal;
+    if (msg.isPrivate) {
+      setShowForwardModal(null);
+      showToast('Private messages cannot be forwarded');
+      return;
+    }
     try {
       await MessageEnhancementsService.forwardMessage(
         selectedChatId, targetChatId, msg.id, user.uid, msg.senderId,
@@ -2110,15 +2155,57 @@ export default function App() {
   const handleMessageSearch = async (term: string) => {
     if (!term.trim()) { setMessageSearchResults([]); return; }
     const chatIds = chats.map(c => c.id);
-    const results = await MessageEnhancementsService.searchAllChats(chatIds, term);
+    const results = await MessageEnhancementsService.searchAllChats(chatIds, term, 5, user?.uid);
     setMessageSearchResults(results);
   };
 
   const handleVoiceMessage = async (blob: Blob, duration: number) => {
     if (!selectedChatId || !user) return;
-    setShowVoiceRecorder(false);
     const chat = chats.find((c) => c.id === selectedChatId);
-    const msgRef = doc(collection(db, 'conversations', selectedChatId, 'messages'));
+
+    if (chat?.type === 'group' && selectiveMode && selectedRecipientIds.length === 0) {
+      showToast('Choose at least one member, or switch back to Everyone.');
+      return;
+    }
+
+    const selectedMembers = groupMembers.filter((member) => selectedRecipientIds.includes(member.id));
+    const allMembersSelected = groupMembers.length > 0 && selectedMembers.length === groupMembers.length;
+    const isPrivateVoice = chat?.type === 'group'
+      && selectiveMode
+      && selectedMembers.length > 0
+      && !allMembersSelected;
+
+    const recipientUids: string[] = [];
+    if (isPrivateVoice) {
+      for (const member of selectedMembers) {
+        if (!member.id.includes('@')) {
+          recipientUids.push(member.id);
+          continue;
+        }
+        let match: { uid?: string } | undefined = allUsers.find(
+          u => u.uid === member.id || u.email?.toLowerCase() === member.id.toLowerCase(),
+        ) || syncedContacts.find(
+          c => c.uid === member.id || c.email?.toLowerCase() === member.id.toLowerCase(),
+        );
+        if (!match?.uid) {
+          const snap = await getDocs(query(
+            collection(db, 'users_public'),
+            where('email', '==', member.id.toLowerCase()),
+            limit(1),
+          ));
+          if (!snap.empty) match = { uid: snap.docs[0].id };
+        }
+        if (match?.uid && !match.uid.includes('@')) recipientUids.push(match.uid);
+      }
+      if (recipientUids.length !== selectedMembers.length) {
+        showToast('Some selected members are not registered yet, so a private voice message cannot be delivered.');
+        return;
+      }
+    }
+
+    setShowVoiceRecorder(false);
+    const targetCollection = isPrivateVoice ? 'private_messages' : 'messages';
+    const msgRef = doc(collection(db, 'conversations', selectedChatId, targetCollection));
     await setDoc(msgRef, {
       id: msgRef.id,
       chatId: selectedChatId,
@@ -2130,20 +2217,33 @@ export default function App() {
       fileUrl: 'uploading...',
       iv: '',
       encryptedSessionKeys: {},
+      ...(isPrivateVoice ? {
+        visibleTo: Array.from(new Set([...recipientUids, user.uid])),
+        isPrivate: true,
+        recipientCount: recipientUids.length,
+      } : {}),
     });
     try {
+      const participantIds = isPrivateVoice
+        ? Array.from(new Set([...recipientUids, user.uid]))
+        : (chat?.participants || [user.uid]);
       const { fileUrl, voiceMeta, encryptionFields } = await VoiceMessageService.encryptAndUploadVoice(
         selectedChatId,
         msgRef.id,
         blob,
         duration,
-        chat?.participants || [user.uid],
+        participantIds,
         user.uid
       );
       await VoiceMessageService.attachVoiceToMessage(
-        selectedChatId, msgRef.id, fileUrl, voiceMeta, encryptionFields
+        selectedChatId, msgRef.id, fileUrl, voiceMeta, encryptionFields, targetCollection
       );
-      showToast('Voice message sent securely');
+      if (selectiveMode) {
+        setSelectiveMode(false);
+        setSelectedRecipientIds([]);
+        setShowRecipientPicker(false);
+      }
+      showToast(isPrivateVoice ? 'Private voice message sent' : 'Voice message sent securely');
     } catch (err) {
       console.error('Voice message failed:', err);
       await deleteDoc(msgRef).catch(() => null);
@@ -2153,8 +2253,9 @@ export default function App() {
 
   const handleDeleteForEveryone = async (messageId: string) => {
     if (!selectedChatId || !user) return;
+    const msg = messages.find(m => m.id === messageId);
     try {
-      await MessageEnhancementsService.deleteForEveryone(selectedChatId, messageId, user.uid);
+      await MessageEnhancementsService.deleteForEveryone(selectedChatId, messageId, user.uid, msg?.source || 'messages');
       decryptionCache.delete(messageId);
       setActiveMessageActions(null);
       showToast('Message deleted for everyone');
@@ -2573,45 +2674,46 @@ export default function App() {
   useEffect(() => {
     if (!selectedChatId || !user) return;
 
-    const q = query(
-      collection(db, 'conversations', selectedChatId, 'messages'),
-      orderBy('timestamp', 'desc'),
-      limit(messageLimit)
-    );
+    // Shared messages live in `messages`; selective-recipient messages live in
+    // `private_messages` and are only readable by their recipients. Both are
+    // merged into the same chronological group thread.
+    let sharedMessages: Message[] = [];
+    let privateMessages: Message[] = [];
+    let renderToken = 0;
+    let disposed = false;
 
-    const unsubscribe = onSnapshot(q, async (snapshot) => {
+    const renderThread = async () => {
+      const token = ++renderToken;
       try {
-        console.log("message receiving debug log: snapshot updated with", snapshot.docs.length, "messages");
-        let msgList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
-        
-        // Filter out messages before the resetAt timestamp (fresh start after contact re-add)
+        const seenIds = new Set<string>();
+        let msgList = [...sharedMessages, ...privateMessages].filter((m) => {
+          if (!m.id || seenIds.has(m.id)) return false;
+          seenIds.add(m.id);
+          return true;
+        });
+
+        // Filter out messages before the resetAt timestamp (fresh start after contact re-add).
         const resetAt = chatResetTimestamps[selectedChatId];
         if (resetAt) {
           const resetMs = resetAt.toMillis();
-          msgList = msgList.filter(m => {
-            const msgMs = m.timestamp?.toMillis() || 0;
-            return msgMs >= resetMs;
-          });
+          msgList = msgList.filter(m => (m.timestamp?.toMillis() || 0) >= resetMs);
         }
-        
-        let needsUpdate = false;
-        
-        // Reverse so chronological order is maintained (oldest first, newest last)
-        msgList.reverse();
-        
-        // Mark messages as delivered and seen
+
+        msgList.sort((a, b) => (a.timestamp?.toMillis() || 0) - (b.timestamp?.toMillis() || 0));
+        if (msgList.length > messageLimit) msgList = msgList.slice(-messageLimit);
+
+        // Mark messages as delivered and seen in the collection they live in.
         msgList.forEach(m => {
           if (m.senderId !== user.uid && m.senderId !== user.email?.toLowerCase()) {
             if (!m.seen || !m.delivered) {
-              needsUpdate = true;
-              updateDoc(doc(db, 'conversations', selectedChatId, 'messages', m.id), {
+              updateDoc(doc(db, 'conversations', selectedChatId, m.source || 'messages', m.id), {
                 delivered: true,
                 seen: true
               }).catch(console.error);
             }
           }
         });
-        
+
         const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
         const decryptedList = await Promise.all(msgList.map(async (m) => {
           if (decryptionCache.has(m.id)) {
@@ -2634,14 +2736,16 @@ export default function App() {
           return { ...m, ...media };
         }));
 
+        if (disposed || token !== renderToken) return;
+
         setMessages(decryptedList);
         setFirestoreError(null);
 
-        // Mark incoming messages as seen
+        // Mark incoming messages as seen.
         for (const msg of decryptedList) {
           if (msg.senderId !== user.uid && msg.senderId !== user.email && !msg.seen) {
             try {
-              updateDoc(doc(db, 'conversations', selectedChatId, 'messages', msg.id), { seen: true });
+              updateDoc(doc(db, 'conversations', selectedChatId, msg.source || 'messages', msg.id), { seen: true });
             } catch (err) {
               console.error("Failed to mark message as seen", err);
             }
@@ -2650,7 +2754,11 @@ export default function App() {
 
         for (const msg of decryptedList) {
           if (!msg.securityStatus?.isAnalyzed) {
-            analyzeDecryptedMessage(msg, { chatId: selectedChatId, userId: user.uid }).then((analysis) => {
+            analyzeDecryptedMessage(msg, {
+              chatId: selectedChatId,
+              userId: user.uid,
+              collectionName: msg.source === 'private_messages' ? 'private_messages' : 'messages',
+            }).then((analysis) => {
               if (analysis) {
                 setMessages((prev) => prev.map((m) => m.id === msg.id ? { ...m, securityStatus: analysis } : m));
               }
@@ -2658,9 +2766,20 @@ export default function App() {
           }
         }
       } catch (error: any) {
+        if (disposed || token !== renderToken) return;
         console.error("Message processing error:", error);
         setFirestoreError("Failed to decrypt messages. Your security keys might be out of sync.");
       }
+    };
+
+    const sharedQuery = query(
+      collection(db, 'conversations', selectedChatId, 'messages'),
+      orderBy('timestamp', 'desc'),
+      limit(messageLimit)
+    );
+    const unsubscribeShared = onSnapshot(sharedQuery, (snapshot) => {
+      sharedMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), source: 'messages' } as Message));
+      void renderThread();
     }, (error) => {
       if (error.code === 'unavailable') {
         setFirestoreError("Could not connect to the security database. Please check your internet connection.");
@@ -2668,7 +2787,26 @@ export default function App() {
       handleFirestoreError(error, OperationType.LIST, `chats/${selectedChatId}/messages`);
     });
 
-    return unsubscribe;
+    // The array-contains filter is required by the security rules: without it a
+    // list read of private_messages is denied for everyone.
+    const privateQuery = query(
+      collection(db, 'conversations', selectedChatId, 'private_messages'),
+      where('visibleTo', 'array-contains', user.uid)
+    );
+    const unsubscribePrivate = onSnapshot(privateQuery, (snapshot) => {
+      privateMessages = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data(), source: 'private_messages' } as Message));
+      void renderThread();
+    }, (error) => {
+      // Until the updated rules are deployed this collection is unreadable; the
+      // shared thread must keep working, so only log it.
+      console.warn('Selective recipient messages unavailable:', error?.code || error);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribeShared();
+      unsubscribePrivate();
+    };
   }, [selectedChatId, user, messageLimit, chatResetTimestamps]);
 
   useEffect(() => {
@@ -2898,13 +3036,19 @@ export default function App() {
     if (!user) { console.log("Blocked: noUser"); return; }
     if (isSending) { console.log("Blocked: isSending true"); return; }
 
+    // Never silently fall back to "everyone" when the sender picked
+    // "Selected members" but forgot to check anyone.
+    const activeChat = chats.find(c => c.id === selectedChatId);
+    if (activeChat?.type === 'group' && selectiveMode && selectedRecipientIds.length === 0) {
+      showToast('Choose at least one member, or switch back to Everyone.');
+      return;
+    }
+
     setIsSending(true);
 
-    const replyContext = replyToMessage ? {
-      replyToId: replyToMessage.id,
-      replyToSenderId: replyToMessage.senderId,
-      replyToPreview: getReplyPreview(replyToMessage),
-    } : null;
+    // Built after the recipient scope is known so a private message's preview
+    // never leaks to a wider audience.
+    const replyTarget = replyToMessage;
     
     // Inside the function, use imageToUse and fileToUse instead of selectedImage/selectedFile
     // Remember to update msgData references accordingly.
@@ -3030,8 +3174,53 @@ export default function App() {
       if (normalizedValidParticipants.length === 0) {
         console.warn(`Encryption Warning: No valid participants for encryption. Proceeding with sender-only encryption where possible. Participants: ${JSON.stringify(participants)}`);
       }
+
+      // ── Selective recipients (group chats) ───────────────────────────────
+      // The message is written to `private_messages` and its session keys are
+      // only encrypted for the selected members (plus the sender). Firestore
+      // rules enforce the same visibility, so a non-selected member cannot read
+      // the document even if they know its ID.
+      const allMembersSelected = groupMembers.length > 0
+        && groupMembers.every(member => selectedRecipientIds.includes(member.id));
+      const wantsSelective = chat?.type === 'group'
+        && selectiveMode
+        && selectedRecipientIds.length > 0
+        && !allMembersSelected;
+
+      const recipientUids = new Set<string>();
+      const unresolvedSelection: string[] = [];
+      if (wantsSelective) {
+        for (const id of selectedRecipientIds) {
+          if (!id.includes('@')) {
+            recipientUids.add(id);
+            continue;
+          }
+          const match = normalizedValidParticipants.find(p => p.email?.toLowerCase() === id.toLowerCase())
+            || userProfiles.find(p => p.email?.toLowerCase() === id.toLowerCase() && p.uid && !p.uid.includes('@'));
+          if (match?.uid && !match.uid.includes('@')) {
+            recipientUids.add(match.uid);
+          } else {
+            unresolvedSelection.push(id);
+          }
+        }
+      }
+
+      if (wantsSelective && unresolvedSelection.length > 0) {
+        setIsSending(false);
+        alert(`These members have not finished registering, so a private message cannot be delivered to them: ${unresolvedSelection.join(', ')}`);
+        return;
+      }
+
+      const isPrivateSend = wantsSelective && recipientUids.size > 0;
+      const encryptionParticipants = isPrivateSend
+        ? normalizedValidParticipants.filter(p => recipientUids.has(p.uid))
+        : normalizedValidParticipants;
+      const privateVisibleTo = isPrivateSend
+        ? Array.from(new Set([...recipientUids, user.uid]))
+        : undefined;
+      const targetCollection = isPrivateSend ? 'private_messages' : 'messages';
       
-      const msgRef = doc(collection(db, 'conversations', selectedChatId, 'messages'));
+      const msgRef = doc(collection(db, 'conversations', selectedChatId, targetCollection));
       
       let sessionKey: CryptoKey | null = null;
       let exportedSessionKey: ArrayBuffer | null = null;
@@ -3055,7 +3244,7 @@ export default function App() {
         );
         encryptedContent = btoa(EncryptionService.ab2str(encryptedContentBuffer));
 
-        for (const p of normalizedValidParticipants) {
+        for (const p of encryptionParticipants) {
           try {
             if (!p.publicKey) continue;
             const pubString = p.publicKey.trim().replace(/\s/g, '');
@@ -3103,7 +3292,7 @@ export default function App() {
       };
 
       if (chat?.type !== 'ai') {
-        normalizedValidParticipants.forEach((participant) => {
+        encryptionParticipants.forEach((participant) => {
           addMediaRecipient(participant.uid, participant.publicKey);
           addMediaRecipient(participant.email?.toLowerCase(), participant.publicKey);
         });
@@ -3121,6 +3310,18 @@ export default function App() {
         }
       }
 
+      // A private reply keeps its quoted preview only when every new recipient
+      // was already allowed to read the original private message.
+      const replyPreviewSafe = !replyTarget?.isPrivate || (
+        isPrivateSend
+        && (privateVisibleTo || []).every(id => (replyTarget.visibleTo || []).includes(id))
+      );
+      const replyContext = replyTarget ? {
+        replyToId: replyTarget.id,
+        replyToSenderId: replyTarget.senderId,
+        ...(replyPreviewSafe ? { replyToPreview: getReplyPreview(replyTarget) } : {}),
+      } : null;
+
       // Repeat for Image and File if present
       const msgData: any = {
         id: msgRef.id,
@@ -3136,6 +3337,11 @@ export default function App() {
         encryptedSessionKeys,
         iv: chat?.type === 'ai' ? "" : btoa(EncryptionService.ab2str(iv)),
         timestamp: Timestamp.now(),
+        ...(isPrivateSend ? {
+          visibleTo: privateVisibleTo,
+          isPrivate: true,
+          recipientCount: recipientUids.size,
+        } : {}),
         ...(replyContext ?? {}),
       };
 
@@ -3203,6 +3409,7 @@ export default function App() {
       const optimisticMsg = { 
         ...msgData, 
         id: msgRef.id,
+        source: targetCollection,
         isOptimistic: true,
         decryptedContent: newMessage || ""
       };
@@ -3237,7 +3444,12 @@ export default function App() {
       const lastMessageContent = newMessage.trim() ? newMessage : (imageToUse ? 'Image' : (fileToUse ? `File: ${fileToUse.name}` : '[Encrypted Message]'));
       const previewTimestamp = Timestamp.now();
       const newUnreadCount = { ...chat?.unreadCount };
-      chat?.participants?.forEach(p => {
+      // Only the selected recipients (and never the sender) get a notification
+      // badge for a private message.
+      const unreadRecipients = isPrivateSend
+        ? Array.from(recipientUids)
+        : (chat?.participants || []);
+      unreadRecipients.forEach(p => {
         if (p !== user?.uid && p !== user?.email?.toLowerCase()) {
           newUnreadCount[p] = (newUnreadCount[p] || 0) + 1;
         }
@@ -3248,17 +3460,24 @@ export default function App() {
         timestamp: previewTimestamp,
         isEncrypted: chat?.type !== 'ai'
       };
-      setChats(prev => prev.map(c => c.id === selectedChatId ? {
-        ...c,
-        updatedAt: previewTimestamp,
-        unreadCount: newUnreadCount,
-        lastMessage: previewLastMessage
-      } : c));
-      await updateDoc(doc(db, 'conversations', selectedChatId), {
-        updatedAt: previewTimestamp,
-        unreadCount: newUnreadCount,
-        lastMessage: previewLastMessage
-      });
+      // A private message never becomes the shared conversation preview, so
+      // members who were not selected see nothing at all in their chat list.
+      setChats(prev => prev.map(c => c.id === selectedChatId ? (
+        isPrivateSend
+          ? { ...c, unreadCount: newUnreadCount }
+          : {
+              ...c,
+              updatedAt: previewTimestamp,
+              unreadCount: newUnreadCount,
+              lastMessage: previewLastMessage
+            }
+      ) : c));
+      await updateDoc(
+        doc(db, 'conversations', selectedChatId),
+        isPrivateSend
+          ? { unreadCount: newUnreadCount }
+          : { updatedAt: previewTimestamp, unreadCount: newUnreadCount, lastMessage: previewLastMessage }
+      );
       
       // Clear UI immediately!
       setNewMessage('');
@@ -3266,7 +3485,10 @@ export default function App() {
       setSelectedFile(null);
       setReplyToMessage(null);
       setIsSending(false);
-      showToast("Message sent securely");
+      setSelectiveMode(false);
+      setSelectedRecipientIds([]);
+      setShowRecipientPicker(false);
+      showToast(isPrivateSend ? `Private message sent to ${recipientUids.size} member${recipientUids.size === 1 ? '' : 's'}` : "Message sent securely");
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
       console.log("sendMessage: UI cleared optimistically");
       
@@ -3409,13 +3631,15 @@ export default function App() {
                await updateDoc(msgRef, updates);
              }
              
-             console.log("sendMessage: Updating chat last message...");
-             await updateDoc(doc(db, 'conversations', selectedChatId), {
-               updatedAt: Timestamp.now(),
-               unreadCount: newUnreadCount,
-               lastMessage: previewLastMessage
-             });
-             console.log("sendMessage: Chat updated");
+             if (!isPrivateSend) {
+               console.log("sendMessage: Updating chat last message...");
+               await updateDoc(doc(db, 'conversations', selectedChatId), {
+                 updatedAt: Timestamp.now(),
+                 unreadCount: newUnreadCount,
+                 lastMessage: previewLastMessage
+               });
+               console.log("sendMessage: Chat updated");
+             }
           };
           
           await encryptAndUpload();
@@ -4032,6 +4256,42 @@ export default function App() {
   // --- Render Helpers ---
 
   const selectedChat = useMemo(() => chats.find(c => c.id === selectedChatId), [chats, selectedChatId]);
+
+  // A new chat always starts in "Send to Everyone" mode.
+  useEffect(() => {
+    setShowRecipientPicker(false);
+    setSelectiveMode(false);
+    setSelectedRecipientIds([]);
+  }, [selectedChatId]);
+
+  /** Group members who can be picked as selective recipients (excludes self). */
+  const groupMembers = useMemo(() => {
+    if (!user || !selectedChat || selectedChat.type !== 'group') return [];
+    const selfEmail = user.email?.toLowerCase() || '';
+    const seen = new Set<string>();
+    return (selectedChat.participants || [])
+      .filter((id) => {
+        if (!id || id.startsWith('temp-')) return false;
+        if (id === user.uid || id.toLowerCase() === selfEmail) return false;
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      })
+      .map((id) => {
+        const profile = allUsers.find((u) => u.uid === id || u.email?.toLowerCase() === id.toLowerCase())
+          || syncedContacts.find((c) => c.uid === id || c.email?.toLowerCase() === id.toLowerCase() || c.phoneNumber === id);
+        return {
+          id,
+          name: profile?.displayName || id,
+          email: profile?.email || (id.includes('@') ? id : ''),
+          photoURL: profile?.photoURL || '',
+          // Email-only members are resolved to a UID (via users_public) when the
+          // message is actually sent, so they stay selectable here.
+          resolvable: true,
+        };
+      });
+  }, [selectedChat, user, allUsers, syncedContacts]);
+
   const reportContent = showSecurityReport?.decryptedContent || '';
   const reportIsUndecryptable = reportContent.includes('[Encrypted before you joined]') || reportContent.includes('[Unable to decrypt message]');
   const isUndecryptableMessage = (message?: Pick<Message, 'decryptedContent'> | null) => {
@@ -5077,6 +5337,21 @@ export default function App() {
                             <p className="text-sm italic opacity-60">🚫 This message was deleted</p>
                           ) : (
                             <>
+                              {msg.isPrivate && (
+                                <div className={cn(
+                                  "mb-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-bold uppercase tracking-widest",
+                                  theme === 'glow'
+                                    ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-300"
+                                    : isMe
+                                      ? "border-white/25 bg-black/20 text-white/90"
+                                      : "border-amber-200 bg-amber-50 text-amber-700"
+                                )}>
+                                  <Lock className="w-2.5 h-2.5" />
+                                  {isMe
+                                    ? `Private • ${msg.recipientCount ?? Math.max((msg.visibleTo?.length || 2) - 1, 1)} member${(msg.recipientCount ?? 0) === 1 ? '' : 's'}`
+                                    : 'Private to you'}
+                                </div>
+                              )}
                               {msg.replyToId && (
                                 <div className={cn(
                                   "mb-2 pl-2 border-l-2 rounded-sm",
@@ -5315,9 +5590,10 @@ export default function App() {
                               onPin={() => handlePinMessage(msg.id)}
                               onUnpin={() => handleUnpinMessage(msg.id)}
                               onForward={() => { setShowForwardModal(msg); setActiveMessageActions(null); }}
-                              onReply={() => { setReplyToMessage(msg); setActiveMessageActions(null); }}
+                              onReply={() => startReply(msg)}
                               onDelete={!msg.deletedForEveryone ? () => handleDeleteForEveryone(msg.id) : undefined}
                               onClose={() => setActiveMessageActions(null)}
+                              canForward={!msg.isPrivate}
                             />
                           )}
                           {msg.reactions && Object.keys(msg.reactions).length > 0 && (
@@ -5377,6 +5653,26 @@ export default function App() {
                 "p-4 border-t transition-all",
                 theme === 'glow' ? "bg-emerald-950/40 border-emerald-500/20" : "bg-white border-zinc-100"
               )}>
+                {selectedChat?.type === 'group' && selectiveMode && (
+                  <div className={cn(
+                    "mb-2 p-2 rounded-xl flex items-center justify-between gap-3 border",
+                    theme === 'glow' ? "bg-emerald-900/40 border-emerald-500/30" : "bg-amber-50 border-amber-200"
+                  )}>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Lock className={cn("w-4 h-4 shrink-0", theme === 'glow' ? "text-emerald-400" : "text-amber-600")} />
+                      <span className={cn("text-xs font-semibold truncate", theme === 'glow' ? "text-emerald-100" : "text-amber-800")}>
+                        Private message • only {selectedRecipientIds.length || 'the selected'} member{selectedRecipientIds.length === 1 ? '' : 's'} can see it
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { setSelectiveMode(false); setSelectedRecipientIds([]); setShowRecipientPicker(false); }}
+                      className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 hover:underline shrink-0"
+                    >
+                      Everyone
+                    </button>
+                  </div>
+                )}
                 {replyToMessage && (
                   <div className="mb-2 p-2 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -5408,6 +5704,147 @@ export default function App() {
                 )}
                 <form onSubmit={sendMessage} className="flex items-center gap-3 max-md:gap-2 max-md:w-full max-md:min-w-0">
                   <div className="flex items-center gap-1 max-md:max-w-[40vw] max-md:overflow-x-auto max-md:shrink-0">
+                    {selectedChat?.type === 'group' && (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); setShowRecipientPicker(prev => !prev); setShowEmojiPicker(false); }}
+                          className={cn(
+                            "relative p-2 rounded-lg transition-all",
+                            selectiveMode
+                              ? "text-emerald-600 bg-emerald-500/15 ring-1 ring-emerald-500/40"
+                              : theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
+                          )}
+                          title="Choose who receives this message"
+                        >
+                          <Users className="w-5 h-5" />
+                          {selectiveMode && (
+                            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-emerald-500 text-white text-[9px] font-bold flex items-center justify-center">
+                              {selectedRecipientIds.length}
+                            </span>
+                          )}
+                        </button>
+                        {showRecipientPicker && (
+                          <div
+                            className="fixed inset-0 z-[110] flex items-end md:items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+                            onClick={() => setShowRecipientPicker(false)}
+                          >
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className={cn(
+                            "w-full max-w-sm rounded-2xl border shadow-2xl p-4 max-h-[75vh] overflow-y-auto",
+                            theme === 'glow' ? "bg-zinc-950 border-emerald-500/30 text-white"
+                              : theme === 'dark' ? "bg-zinc-900 border-zinc-700 text-white"
+                              : "bg-white border-zinc-200 text-zinc-900"
+                          )}>
+                            <div className="flex items-center justify-between mb-3">
+                              <div>
+                                <p className="text-xs font-bold uppercase tracking-widest">Send to</p>
+                                <p className={cn("text-[10px]", theme === 'light' ? "text-zinc-500" : "text-zinc-400")}>
+                                  Only checked members will see this message
+                                </p>
+                              </div>
+                              <button type="button" onClick={() => setShowRecipientPicker(false)} className="text-zinc-400 hover:opacity-80">
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 mb-3">
+                              <button
+                                type="button"
+                                onClick={() => { setSelectiveMode(false); setSelectedRecipientIds([]); }}
+                                className={cn(
+                                  "py-2 rounded-xl text-[11px] font-bold border transition-all",
+                                  !selectiveMode
+                                    ? "bg-emerald-500 text-white border-emerald-500"
+                                    : theme === 'light' ? "bg-zinc-50 border-zinc-200 text-zinc-600" : "bg-zinc-800/60 border-zinc-700 text-zinc-300"
+                                )}
+                              >
+                                Everyone
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setSelectiveMode(true)}
+                                className={cn(
+                                  "py-2 rounded-xl text-[11px] font-bold border transition-all",
+                                  selectiveMode
+                                    ? "bg-emerald-500 text-white border-emerald-500"
+                                    : theme === 'light' ? "bg-zinc-50 border-zinc-200 text-zinc-600" : "bg-zinc-800/60 border-zinc-700 text-zinc-300"
+                                )}
+                              >
+                                Selected members
+                              </button>
+                            </div>
+
+                            {selectiveMode ? (
+                              <>
+                                <div className="max-h-52 overflow-y-auto space-y-1 pr-1">
+                                  {groupMembers.length === 0 && (
+                                    <p className={cn("text-xs py-4 text-center", theme === 'light' ? "text-zinc-400" : "text-zinc-500")}>
+                                      No other members in this group yet.
+                                    </p>
+                                  )}
+                                  {groupMembers.map((member) => (
+                                    <label
+                                      key={member.id}
+                                      className={cn(
+                                        "flex items-center gap-3 p-2 rounded-xl cursor-pointer transition-colors",
+                                        !member.resolvable
+                                          ? "opacity-50 cursor-not-allowed"
+                                          : selectedRecipientIds.includes(member.id)
+                                            ? theme === 'light' ? "bg-emerald-50" : "bg-emerald-500/10"
+                                            : theme === 'light' ? "hover:bg-zinc-50" : "hover:bg-white/5"
+                                      )}
+                                      title={member.resolvable ? undefined : 'This member has not finished registering yet'}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="w-4 h-4 accent-emerald-500 shrink-0"
+                                        checked={selectedRecipientIds.includes(member.id)}
+                                        disabled={!member.resolvable}
+                                        onChange={() => {
+                                          setSelectedRecipientIds(prev => prev.includes(member.id)
+                                            ? prev.filter(id => id !== member.id)
+                                            : [...prev, member.id]);
+                                        }}
+                                      />
+                                      <div className="w-8 h-8 rounded-full bg-zinc-200/70 overflow-hidden flex items-center justify-center shrink-0">
+                                        {member.photoURL
+                                          ? <img src={member.photoURL} alt="" className="w-full h-full object-cover" />
+                                          : <UserIcon className="w-4 h-4 text-zinc-500" />}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold truncate">{member.name}</p>
+                                        <p className={cn("text-[10px] truncate", theme === 'light' ? "text-zinc-500" : "text-zinc-400")}>
+                                          {member.resolvable ? (member.email || member.id) : 'Not registered yet'}
+                                        </p>
+                                      </div>
+                                    </label>
+                                  ))}
+                                </div>
+                                <div className="flex items-center justify-between mt-3 pt-3 border-t border-zinc-500/20">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedRecipientIds(groupMembers.filter(m => m.resolvable).map(m => m.id))}
+                                    className="text-[10px] font-bold uppercase tracking-widest text-emerald-500 hover:underline"
+                                  >
+                                    Select all
+                                  </button>
+                                  <span className={cn("text-[10px] font-bold", theme === 'light' ? "text-zinc-500" : "text-zinc-400")}>
+                                    {selectedRecipientIds.length} selected
+                                  </span>
+                                </div>
+                              </>
+                            ) : (
+                              <p className={cn("text-[11px] leading-relaxed", theme === 'light' ? "text-zinc-500" : "text-zinc-400")}>
+                                Everyone in this group receives the message. Switch to Selected members to keep a message private inside the same group chat.
+                              </p>
+                            )}
+                          </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <div className="relative">
                       <button 
                         type="button"

@@ -17,10 +17,12 @@ interface MessageActionsProps {
   onReply: () => void;
   onDelete?: () => void;
   onClose: () => void;
+  /** Selective-recipient messages cannot be forwarded to a wider audience. */
+  canForward?: boolean;
 }
 
 export default function MessageActions({
-  messageId, isPinned, isOwnMessage, reactions, currentUserId, theme, onReact, onPin, onUnpin, onForward, onReply, onDelete, onClose,
+  messageId, isPinned, isOwnMessage, reactions, currentUserId, theme, onReact, onPin, onUnpin, onForward, onReply, onDelete, onClose, canForward = true,
 }: MessageActionsProps) {
   const cardClass = theme === 'glow'
     ? 'bg-emerald-950 border-emerald-500/30 text-white'
@@ -54,7 +56,12 @@ export default function MessageActions({
         <button onClick={onReply} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium hover:bg-white/10 transition-colors">
           <Reply className="w-3.5 h-3.5" /> Reply
         </button>
-        <button onClick={onForward} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium hover:bg-white/10 transition-colors">
+        <button
+          onClick={onForward}
+          disabled={!canForward}
+          title={canForward ? undefined : 'Private messages cannot be forwarded'}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium hover:bg-white/10 transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+        >
           <Forward className="w-3.5 h-3.5" /> Forward
         </button>
         <button

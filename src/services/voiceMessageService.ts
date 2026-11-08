@@ -120,9 +120,10 @@ export class VoiceMessageService {
     messageId: string,
     fileUrl: string,
     voiceMeta: VoiceMessageMeta,
-    encryptionFields?: Record<string, unknown>
+    encryptionFields?: Record<string, unknown>,
+    collectionName: 'messages' | 'private_messages' = 'messages'
   ): Promise<void> {
-    await updateDoc(doc(db, 'conversations', chatId, 'messages', messageId), {
+    await updateDoc(doc(db, 'conversations', chatId, collectionName, messageId), {
       fileUrl,
       type: 'voice',
       voiceMessage: voiceMeta,

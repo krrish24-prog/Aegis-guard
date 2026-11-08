@@ -55,6 +55,18 @@ service cloud.firestore {
         && isConversationParticipant(conversationDoc(chatId).data.participants);
     }
 
+    // Selective-recipient (private) messages are stored one level away from the
+    // shared message log, in `private_messages`. Access is scoped to the exact
+    // recipient UIDs recorded on the message, so a group member who was not
+    // selected cannot read the document even if they know its ID. The client
+    // always queries the collection with
+    // `where('visibleTo', 'array-contains', uid)`, which is what makes this rule
+    // satisfiable for list queries.
+    function canReadPrivateMessage(chatId) {
+      return isMemberOfChat(chatId)
+        && request.auth.uid in resource.data.visibleTo;
+    }
+
     // Private user profiles — private keys must never be stored server-side.
     // Public profile data (displayName, photoURL, publicKey, presence) lives in
     // /users_public, so a private profile is only ever read by its own owner.
@@ -122,6 +134,27 @@ service cloud.firestore {
 
         allow update: if isMemberOfChat(chatId);
         allow delete: if isMemberOfChat(chatId);
+      }
+
+      // Selective-recipient messages inside the same group conversation.
+      // `visibleTo` lists the UIDs that may ever read the document; the sender
+      // is always included. Non-selected members cannot read, list, update or
+      // delete these messages, so the restriction is enforced by the database
+      // and not just by the UI.
+      match /private_messages/{messageId} {
+        allow read: if canReadPrivateMessage(chatId);
+
+        allow create: if isMemberOfChat(chatId)
+          && request.resource.data.visibleTo is list
+          && getUserUid() == request.resource.data.senderId
+          && getUserUid() in request.resource.data.visibleTo;
+
+        // Recipients may update read/reaction state, but they can never widen
+        // the audience or change who sent the message.
+        allow update: if canReadPrivateMessage(chatId)
+          && request.resource.data.visibleTo == resource.data.visibleTo
+          && request.resource.data.senderId == resource.data.senderId;
+        allow delete: if canReadPrivateMessage(chatId);
       }
     }
 

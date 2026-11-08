@@ -38,7 +38,13 @@ export async function analyzeDecryptedMessage(
     decryptedFileName?: string;
     securityStatus?: SecurityAnalysis;
   },
-  ctx: { chatId: string; userId: string; skipThreatIntel?: boolean },
+  ctx: {
+    chatId: string;
+    userId: string;
+    skipThreatIntel?: boolean;
+    /** 'messages' for the shared log, 'private_messages' for selective sends. */
+    collectionName?: 'messages' | 'private_messages';
+  },
 ): Promise<SecurityAnalysis | null> {
   if (msg.securityStatus?.isAnalyzed) return msg.securityStatus;
   if (!isMessageReadyForAnalysis(msg)) return null;
@@ -73,7 +79,7 @@ export async function analyzeDecryptedMessage(
       }).catch(console.error);
     }
 
-    await updateDoc(doc(db, 'conversations', ctx.chatId, 'messages', msg.id), {
+    await updateDoc(doc(db, 'conversations', ctx.chatId, ctx.collectionName || 'messages', msg.id), {
       securityStatus: analysis,
     });
 
@@ -90,11 +96,11 @@ export async function analyzeDecryptedMessage(
       steganographyReport: 'N/A',
     };
     try {
-      await updateDoc(doc(db, 'conversations', ctx.chatId, 'messages', msg.id), {
+      await updateDoc(doc(db, 'conversations', ctx.chatId, ctx.collectionName || 'messages', msg.id), {
         securityStatus: fallback,
       });
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `conversations/${ctx.chatId}/messages/${msg.id}`);
+      handleFirestoreError(error, OperationType.UPDATE, `conversations/${ctx.chatId}/${ctx.collectionName || 'messages'}/${msg.id}`);
     }
     completed.add(msg.id);
     return fallback;
