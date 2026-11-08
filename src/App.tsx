@@ -35,6 +35,7 @@ import {
   Timestamp,
   updateDoc,
   getDocs,
+  getDocFromServer,
   deleteDoc,
   writeBatch,
   arrayUnion,
@@ -273,6 +274,25 @@ const formatStatusTimeLeft = (expiryMs: number, now: number): string => {
   return `${minutes}m left`;
 };
 
+const clampStatusHours = (hours: number): number =>
+  Number.isFinite(hours) ? Math.min(168, Math.max(1, Math.round(hours))) : 24;
+
+const formatDurationSummary = (hours: number): string => {
+  const safe = clampStatusHours(hours);
+  if (safe === 168) return 'in 7 days';
+  if (safe < 24) return `in ${safe} hour${safe === 1 ? '' : 's'}`;
+  const days = Math.floor(safe / 24);
+  const rest = safe % 24;
+  const dayLabel = `${days} day${days === 1 ? '' : 's'}`;
+  return rest ? `in ${dayLabel} ${rest}h` : `in ${dayLabel}`;
+};
+
+const statusAudienceLabel = (privacy?: StatusUpdate['privacy']): string => {
+  if (privacy === 'me') return 'Only me';
+  if (privacy === 'contacts' || privacy === 'except') return 'Contacts';
+  return 'Everyone';
+};
+
 // --- Types ---
 
 interface UserProfile {
@@ -429,7 +449,7 @@ interface StatusUpdate {
   timestamp: Timestamp;
   /** When the status stops being visible (8h, 24h or 48h after posting). */
   expiresAt?: Timestamp;
-  durationHours?: 8 | 24 | 48;
+  durationHours?: number;
   privacy?: 'everyone' | 'contacts' | 'me' | 'except';
   securityStatus?: SecurityAnalysis;
   authorName?: string;
@@ -786,11 +806,13 @@ export default function App() {
   // Status composer (unlocked): a photo/video/text draft with a chosen lifetime.
   const [statusDraft, setStatusDraft] = useState<{ file: File | null; previewUrl: string | null; type: 'image' | 'video' | 'text' } | null>(null);
   const [statusCaption, setStatusCaption] = useState('');
-  const [statusDurationHours, setStatusDurationHours] = useState<8 | 24 | 48>(24);
+  const [statusDurationHours, setStatusDurationHours] = useState<number>(24);
+  const [statusDurationCustom, setStatusDurationCustom] = useState(false);
   const [statusScan, setStatusScan] = useState<SecurityAnalysis | null>(null);
   const [statusScanning, setStatusScanning] = useState(false);
   const [isPostingStatus, setIsPostingStatus] = useState(false);
   const [statusPostError, setStatusPostError] = useState<string | null>(null);
+  const [statusFeedError, setStatusFeedError] = useState<string | null>(null);
   const [statusClock, setStatusClock] = useState(Date.now());
 
   const allStatuses = useMemo(() => {
@@ -938,6 +960,7 @@ export default function App() {
       }
 
       const createdAt = Timestamp.now();
+      const durationHours = clampStatusHours(statusDurationHours);
       const statusRef = doc(collection(db, 'status_updates'));
       const newStatus: StatusUpdate = {
         id: statusRef.id,
@@ -946,8 +969,8 @@ export default function App() {
         type: statusDraft.type,
         text: statusCaption.trim(),
         timestamp: createdAt,
-        expiresAt: Timestamp.fromMillis(createdAt.toMillis() + statusDurationHours * 60 * 60 * 1000),
-        durationHours: statusDurationHours,
+        expiresAt: Timestamp.fromMillis(createdAt.toMillis() + durationHours * 60 * 60 * 1000),
+        durationHours,
         privacy: statusPrivacy,
         securityStatus: analysis,
         authorName: profile?.displayName || user.displayName || user.email || 'You',
@@ -956,6 +979,18 @@ export default function App() {
 
       await setDoc(statusRef, newStatus);
 
+      // Firestore resolves writes optimistically, so confirm the server really
+      // accepted this status before telling anyone it was posted.
+      try {
+        const saved = await getDocFromServer(statusRef);
+        if (!saved.exists()) {
+          throw new Error('the document does not exist on the server');
+        }
+      } catch (verifyError: any) {
+        setStatusPostError(`Firestore did not save this status (${verifyError?.message || verifyError}). Deploy the rules with "firebase deploy --only firestore:rules" and try again.`);
+        return;
+      }
+
       setLocalStatusUpdates(prev => [{ ...newStatus }, ...prev]);
       setTimeout(() => setLocalStatusUpdates(prev => prev.filter(s => s.id !== statusRef.id)), 4000);
 
@@ -963,7 +998,7 @@ export default function App() {
       setViewingStatus(newStatus);
       closeStatusComposer();
       setStatusClock(Date.now());
-      showToast(`Status posted for ${statusDurationHours}h • ${analysis.isAnalyzed ? `${analysis.score}/100 safe` : 'scan unavailable'}`);
+      showToast(`Status posted for ${durationHours}h • ${analysis.isAnalyzed ? `${analysis.score}/100 safe` : 'scan unavailable'}`);
     } catch (error: any) {
       console.error('Status upload failed:', error);
       setStatusPostError(error?.message || 'Status upload failed. Please try again.');
@@ -1237,8 +1272,12 @@ export default function App() {
         return true;
       });
       setStatusUpdates(updates);
+      setStatusFeedError(null);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'status_updates');
+      // A denied or failed query used to fail silently, which looks exactly like
+      // "nobody can see my status". Surface it on the page instead.
+      setStatusFeedError(error instanceof Error ? error.message : String(error));
     });
     return unsubscribe;
   }, [user, syncedContacts]);
@@ -6459,6 +6498,7 @@ export default function App() {
                   <p className="text-white/50 text-xs mt-0.5">
                     {viewingStatus.timestamp && typeof viewingStatus.timestamp.toDate === 'function' ? format(viewingStatus.timestamp.toDate(), 'PP p') : 'Just now'}
                     {' • '}{formatStatusTimeLeft(statusExpiryMs(viewingStatus), statusClock)}
+                    {' • '}{statusAudienceLabel(viewingStatus.privacy)}
                   </p>
                 </div>
                 {viewingStatus.securityStatus && (
@@ -6542,7 +6582,7 @@ export default function App() {
               </button>
               <div className="flex-1 min-w-0">
                 <h3 className={cn("font-bold text-sm", theme === 'glow' ? 'text-white' : 'text-zinc-900')}>My Status</h3>
-                <p className="text-xs text-zinc-500">Pick 8h, 24h or 48h — it expires on its own.</p>
+                <p className="text-xs text-zinc-500">Pick 8h, 24h, 48h or your own duration — it expires on its own.</p>
               </div>
             </div>
 
@@ -6561,6 +6601,14 @@ export default function App() {
             </div>
           </div>
         </div>
+        {statusFeedError && (
+          <div className="p-3 rounded-2xl border border-red-200 bg-red-50 text-red-700 text-xs space-y-1">
+            <p className="font-bold flex items-center gap-1.5"><ShieldAlert className="w-3.5 h-3.5" /> Status feed blocked by Firestore</p>
+            <p className="break-words">{statusFeedError}</p>
+            <p>Deploy the rules with <span className="font-mono">firebase deploy --only firestore:rules</span>.</p>
+          </div>
+        )}
+
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold uppercase tracking-widest text-zinc-400">Recent Updates</h3>
@@ -6635,7 +6683,10 @@ export default function App() {
                       </span>
                     </div>
                   </div>
-                  <span className={cn("text-[10px] font-bold truncate", theme === 'glow' ? "text-emerald-50" : "text-zinc-700")}>{author}</span>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={cn("text-[10px] font-bold truncate", theme === 'glow' ? "text-emerald-50" : "text-zinc-700")}>{author}</span>
+                    <span className="text-[9px] text-zinc-400 shrink-0">{statusAudienceLabel(status.privacy)}</span>
+                  </div>
                 </div>
               )})}
             </div>
@@ -6703,23 +6754,59 @@ export default function App() {
 
                 <div>
                   <p className="text-[11px] font-bold uppercase tracking-widest text-zinc-400 mb-2">Visible for</p>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-4 gap-2">
                     {[8, 24, 48].map((hours) => (
                       <button
                         key={hours}
                         type="button"
-                        onClick={() => setStatusDurationHours(hours as 8 | 24 | 48)}
+                        onClick={() => {
+                          setStatusDurationCustom(false);
+                          setStatusDurationHours(hours);
+                        }}
                         className={cn(
                           "py-2.5 rounded-2xl text-xs font-bold transition-all",
-                          statusDurationHours === hours
+                          !statusDurationCustom && statusDurationHours === hours
                             ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30"
                             : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
                         )}
                       >
-                        {hours} hours
+                        {hours}h
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      onClick={() => setStatusDurationCustom(true)}
+                      className={cn(
+                        "py-2.5 rounded-2xl text-xs font-bold transition-all",
+                        statusDurationCustom
+                          ? "bg-emerald-500 text-white shadow-sm shadow-emerald-500/30"
+                          : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                      )}
+                    >
+                      Custom
+                    </button>
                   </div>
+                  {statusDurationCustom && (
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="number"
+                        min={1}
+                        max={168}
+                        value={Number.isFinite(statusDurationHours) ? statusDurationHours : 24}
+                        onChange={(e) => {
+                          const next = Number(e.target.value);
+                          if (!Number.isFinite(next)) return;
+                          setStatusDurationHours(Math.min(168, Math.max(1, Math.round(next))));
+                        }}
+                        className="w-24 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-bold text-zinc-900 outline-none focus:ring-2 focus:ring-emerald-500/40"
+                        aria-label="Custom status duration in hours"
+                      />
+                      <span className="text-xs text-zinc-500">hours (1–168 · up to 7 days)</span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-zinc-400 mt-2">
+                    Expires {formatDurationSummary(statusDurationHours)}
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
