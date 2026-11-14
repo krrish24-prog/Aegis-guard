@@ -26,10 +26,16 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 const DEFAULT_NVIDIA_URL = process.env.NVIDIA_API_URL || "https://integrate.api.nvidia.com/v1/chat/completions";
-const FALLBACK_NVIDIA_MODEL = "google/diffusiongemma-26b-a4b-it";
+const ACTIVE_NVIDIA_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b";
+const SAFETY_NVIDIA_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b";
+const FALLBACK_NVIDIA_MODEL = ACTIVE_NVIDIA_MODEL;
 const RETIRED_NVIDIA_MODELS = new Map([
   ["meta/llama-3.1-8b-instruct", FALLBACK_NVIDIA_MODEL],
   ["moonshotai/kimi-k3", FALLBACK_NVIDIA_MODEL],
+  ["google/diffusiongemma-26b-a4b-it", FALLBACK_NVIDIA_MODEL],
+  ["nvidia/llama-3.1-nemotron-ultra-253b-v1", FALLBACK_NVIDIA_MODEL],
+  ["nvidia/nemotron-3-super-120b-a12b", FALLBACK_NVIDIA_MODEL],
+  ["mistralai/mistral-large-2-instruct", FALLBACK_NVIDIA_MODEL],
 ]);
 
 const resolveNvidiaModel = (model = process.env.NVIDIA_MODEL || FALLBACK_NVIDIA_MODEL) => {
@@ -38,7 +44,7 @@ const resolveNvidiaModel = (model = process.env.NVIDIA_MODEL || FALLBACK_NVIDIA_
 };
 
 const DEFAULT_NVIDIA_MODEL = resolveNvidiaModel();
-const FALLBACK_NVIDIA_VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b";
+const FALLBACK_NVIDIA_VISION_MODEL = ACTIVE_NVIDIA_MODEL;
 
 const resolveNvidiaVisionModel = (
   model = process.env.NVIDIA_VISION_MODEL || FALLBACK_NVIDIA_VISION_MODEL
@@ -46,6 +52,15 @@ const resolveNvidiaVisionModel = (
   const normalized = model.trim();
   return RETIRED_NVIDIA_MODELS.get(normalized) || normalized || FALLBACK_NVIDIA_VISION_MODEL;
 };
+
+// Text/document analysis uses a larger model; vision requests still use the VL model.
+const ANALYSIS_NVIDIA_MODEL = resolveNvidiaModel(
+  process.env.NVIDIA_ANALYSIS_MODEL || "nvidia/nemotron-3-ultra-550b-a55b"
+);
+
+// Current NVIDIA models reason before answering, so a small output budget produces
+// an empty/truncated answer. Analysis calls need room for reasoning plus the JSON.
+const ANALYSIS_MAX_TOKENS = Math.max(Number(process.env.AI_ANALYSIS_MAX_TOKENS) || 1600, 900);
 
 const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwrite.io/v1").replace(/\/$/, "");
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
@@ -606,28 +621,55 @@ async function startServer() {
       throw new Error("NVIDIA client not configured");
     }
 
-    const response = await fetch(aiClient.url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${aiClient.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: params.model || aiClient.model,
-        messages: params.messages,
-        temperature: 0.0,
-        max_tokens: params.maxTokens || DEFAULT_MAX_TOKENS,
-        stream: !!params.stream,
-      })
-    });
+    const requestedModel = params.model || aiClient.model;
+    const modelsToTry = requestedModel === SAFETY_NVIDIA_MODEL
+      ? [requestedModel]
+      : [requestedModel, SAFETY_NVIDIA_MODEL];
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error(`NVIDIA API error ${response.status}:`, errText);
-      const err = new Error(userFacingAiError({ status: response.status }));
-      (err as any).status = response.status;
+    let response: Response | null = null;
+    let lastErrorText = "";
+    let usedModel = requestedModel;
+
+    for (const model of modelsToTry) {
+      usedModel = model;
+      response = await fetch(aiClient.url, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${aiClient.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model,
+          messages: params.messages,
+          temperature: 0.0,
+          max_tokens: params.maxTokens || DEFAULT_MAX_TOKENS,
+          stream: !!params.stream,
+        })
+      });
+
+      if (response.ok) break;
+
+      lastErrorText = await response.text();
+      // 410 = model retired, 404 = model not served for this account.
+      const retired = response.status === 410 || response.status === 404;
+      const isLastModel = model === modelsToTry[modelsToTry.length - 1];
+      if (!retired || isLastModel) break;
+
+      console.warn(`NVIDIA model ${model} is unavailable (${response.status}); retrying with ${modelsToTry[modelsToTry.length - 1]}.`, lastErrorText.slice(0, 300));
+    }
+
+    if (!response || !response.ok) {
+      const status = response?.status || 502;
+      const errText = lastErrorText || "No response from NVIDIA";
+      console.error(`NVIDIA API error ${status}:`, errText);
+      const err = new Error(userFacingAiError({ status }));
+      (err as any).status = status;
       (err as any).providerError = errText;
       throw err;
+    }
+
+    if (usedModel !== requestedModel) {
+      console.warn(`NVIDIA served ${usedModel} instead of ${requestedModel}.`);
     }
 
     if (params.stream) {
@@ -641,6 +683,7 @@ async function startServer() {
     messages: AiMessage[];
     stream?: boolean;
     maxTokens?: number;
+    model?: string;
   }) => {
     const hasImage = params.messages.some(
       (message) =>
@@ -657,7 +700,21 @@ async function startServer() {
       });
     }
 
-    return createNvidiaCompletion(params);
+    const response = await createNvidiaCompletion(params);
+
+    if (params.stream) return response;
+
+    // Reasoning models can consume the whole budget and return no content.
+    // Retry once with a larger budget instead of surfacing an empty analysis.
+    const choice = response?.choices?.[0];
+    const hasContent = typeof choice?.message?.content === "string" && choice.message.content.trim().length > 0;
+    if (choice?.finish_reason === "length" || !hasContent) {
+      const retryTokens = Math.round((params.maxTokens || DEFAULT_MAX_TOKENS) * 2);
+      console.warn(`AI response was empty or truncated; retrying with max_tokens=${retryTokens}.`);
+      return createNvidiaCompletion({ ...params, maxTokens: retryTokens });
+    }
+
+    return response;
   };
 
   const getAsOpenAICompatibleMessages = (
@@ -716,6 +773,29 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
     const trimmed = value.trim();
     const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
     return fenced ? fenced[1].trim() : trimmed;
+  };
+
+  // Reasoning models may return their answer in reasoning_content, or wrap JSON in prose.
+  const extractModelJson = (response: any): string => {
+    const message = response?.choices?.[0]?.message;
+    const candidates = [message?.content, message?.reasoning_content, response?.message?.content]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+
+    for (const candidate of candidates) {
+      const text = stripJsonFence(candidate);
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start === -1 || end <= start) continue;
+      const json = text.slice(start, end + 1);
+      try {
+        JSON.parse(json);
+        return json;
+      } catch {
+        // keep looking in the remaining candidates
+      }
+    }
+
+    return stripJsonFence(message?.content || "{}");
   };
 
   // API wrapper for Aegis Guard Chat
@@ -839,9 +919,13 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
         { role: "user" as const, content: userContent }
       ];
 
-      const response = await createAICompletion({ messages, maxTokens: 260 });
+      const response = await createAICompletion({
+        messages,
+        maxTokens: ANALYSIS_MAX_TOKENS,
+        model: ANALYSIS_NVIDIA_MODEL,
+      });
 
-      res.json({ text: stripJsonFence(extractResponseText(response) || '{}') });
+      res.json({ text: extractModelJson(response) });
     } catch (error: any) {
       if (error?.status === 429 || error?.status === 404 || error?.status === 503) {
         res.status(503).json({ text: FAIL_CLOSED_ANALYSIS });
@@ -892,9 +976,13 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
         { role: "user" as const, content: userPrompt }
       ];
 
-      const response = await createAICompletion({ messages, maxTokens: 220 });
+      const response = await createAICompletion({
+        messages,
+        maxTokens: ANALYSIS_MAX_TOKENS,
+        model: ANALYSIS_NVIDIA_MODEL,
+      });
 
-      res.json({ text: stripJsonFence(extractResponseText(response) || '{}') });
+      res.json({ text: extractModelJson(response) });
     } catch (error: any) {
       if (error?.status === 429 || error?.status === 404 || error?.status === 503) {
         res.status(503).json({ text: FAIL_CLOSED_CALL });
@@ -948,9 +1036,13 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
           { role: "user" as const, content: userPrompt }
         ];
 
-        const response = await createAICompletion({ messages, maxTokens: 180 });
-          
-        res.json({ text: stripJsonFence(extractResponseText(response) || '{}') });
+        const response = await createAICompletion({
+          messages,
+          maxTokens: ANALYSIS_MAX_TOKENS,
+          model: ANALYSIS_NVIDIA_MODEL,
+        });
+
+        res.json({ text: extractModelJson(response) });
     } catch (error: any) {
         if (error?.status === 429 || error?.status === 404 || error?.status === 503) {
           res.status(503).json({ text: FAIL_CLOSED_GROUP });
@@ -986,8 +1078,12 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
 
       const messages: AiMessage[] = [{ role: "user", content: userPrompt }];
 
-      const response = await createAICompletion({ messages, maxTokens: 260 });
-      const responseContent = stripJsonFence(extractResponseText(response) || '{}');
+      const response = await createAICompletion({
+        messages,
+        maxTokens: ANALYSIS_MAX_TOKENS,
+        model: ANALYSIS_NVIDIA_MODEL,
+      });
+      const responseContent = extractModelJson(response);
       
       try {
         const result = JSON.parse(responseContent);
@@ -1018,8 +1114,12 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
         Respond as JSON with: malwareScore (number), isSafe (boolean), findings (array of strings), summary (string)`;
 
       const messages: AiMessage[] = [{ role: "user", content: userPrompt }];
-      const response = await createAICompletion({ messages, maxTokens: 180 });
-      const content = stripJsonFence(extractResponseText(response) || '{}');
+      const response = await createAICompletion({
+        messages,
+        maxTokens: ANALYSIS_MAX_TOKENS,
+        model: ANALYSIS_NVIDIA_MODEL,
+      });
+      const content = extractModelJson(response);
       
       try {
         res.json(JSON.parse(content));
@@ -1050,9 +1150,18 @@ You are security-aware, so warn about scams, phishing, malware, risky links, pri
         { role: "user" as const, content: userPrompt }
       ];
 
-      const response = await createAICompletion({ messages, maxTokens: 220 });
+      const response = await createAICompletion({
+        messages,
+        maxTokens: ANALYSIS_MAX_TOKENS,
+        model: ANALYSIS_NVIDIA_MODEL,
+      });
 
-      res.json({ answer: extractResponseText(response) });
+      res.json({
+        answer:
+          extractResponseText(response) ||
+          response?.choices?.[0]?.message?.reasoning_content ||
+          "The assistant could not produce an answer. Please try again.",
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }

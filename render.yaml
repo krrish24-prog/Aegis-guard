@@ -12,7 +12,7 @@ services:
       - key: NVIDIA_API_URL
         value: https://integrate.api.nvidia.com/v1/chat/completions
       - key: NVIDIA_MODEL
-        value: google/diffusiongemma-26b-a4b-it
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
       - key: NVIDIA_VISION_MODEL
         value: nvidia/nemotron-3.5-super-vl-120b-a12b
       - key: AI_MAX_TOKENS
