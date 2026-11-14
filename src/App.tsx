@@ -1256,6 +1256,7 @@ export default function App() {
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [isProfileGlow, setIsProfileGlow] = useState(false);
   const [firestoreError, setFirestoreError] = useState<string | null>(null);
+  const [threadReloadToken, setThreadReloadToken] = useState(0);
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
   const [addContactOption, setAddContactOption] = useState<'search' | 'keypad' | 'email'>('search');
   const [keypadInput, setKeypadInput] = useState('');
@@ -2953,8 +2954,20 @@ export default function App() {
           }
         });
 
-        const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+        let keys: { publicKey: string; privateKey: string } | null = null;
+        let keyError: any = null;
+        try {
+          keys = await EncryptionService.getOrCreateKeyPair(user.uid);
+        } catch (error) {
+          keyError = error;
+          console.error("E2EE key setup failed:", error);
+        }
+
+        let undecryptable = 0;
         const decryptedList = await Promise.all(msgList.map(async (m) => {
+          if (!keys) {
+            return { ...m, decryptedContent: m.iv ? '[Unable to decrypt message]' : m.content };
+          }
           if (decryptionCache.has(m.id)) {
             const cached = decryptionCache.get(m.id);
             const fileReady = m.fileUrl?.startsWith('http') || m.fileUrl?.startsWith('/api/storage/');
@@ -2968,7 +2981,17 @@ export default function App() {
             decryptionCache.delete(m.id);
           }
 
-          const media = await decryptMessageMedia(m, user.uid, user.email, keys.privateKey);
+          let media;
+          try {
+            media = await decryptMessageMedia(m, user.uid, user.email, keys.privateKey);
+          } catch (error) {
+            console.error("Message decryption failed", m.id, error);
+            undecryptable += 1;
+            return { ...m, decryptedContent: m.iv ? '[Unable to decrypt message]' : m.content };
+          }
+          if (m.iv && (!media.decryptedContent || media.decryptedContent === m.content)) {
+            undecryptable += 1;
+          }
           if (m.status !== 'uploading' && m.status !== 'sending') {
             decryptionCache.set(m.id, media);
           }
@@ -2978,7 +3001,15 @@ export default function App() {
         if (disposed || token !== renderToken) return;
 
         setMessages(decryptedList);
-        setFirestoreError(null);
+        if (keyError) {
+          setFirestoreError(
+            "Secure keys are unavailable in this browser, so messages cannot be decrypted. Open Aegis Guard in a normal tab over HTTPS.",
+          );
+        } else if (undecryptable > 0) {
+          setFirestoreError("Failed to decrypt messages. Your security keys might be out of sync.");
+        } else {
+          setFirestoreError(null);
+        }
 
         // Mark incoming messages as seen.
         for (const msg of decryptedList) {
@@ -3007,7 +3038,12 @@ export default function App() {
       } catch (error: any) {
         if (disposed || token !== renderToken) return;
         console.error("Message processing error:", error);
-        setFirestoreError("Failed to decrypt messages. Your security keys might be out of sync.");
+        const reason = String(error?.message || error || "");
+        setFirestoreError(
+          /storage|quota|crypto|subtle|security/i.test(reason)
+            ? "This browser is blocking secure key storage. Open Aegis Guard in a normal tab over HTTPS and tap Retry."
+            : "Could not load this conversation. Tap Retry to try again.",
+        );
       }
     };
 
@@ -3046,7 +3082,7 @@ export default function App() {
       unsubscribeShared();
       unsubscribePrivate();
     };
-  }, [selectedChatId, user, messageLimit, chatResetTimestamps]);
+  }, [selectedChatId, user, messageLimit, chatResetTimestamps, threadReloadToken]);
 
   useEffect(() => {
     if (messagesContainerRef.current) {
@@ -3086,8 +3122,7 @@ export default function App() {
 
     try {
       if (user?.uid) {
-        localStorage.removeItem(`aegis_rsa_private_key_${user.uid}`);
-        localStorage.removeItem(`aegis_rsa_public_key_${user.uid}`);
+        EncryptionService.resetKeyPair(user.uid);
       }
       const keys = await EncryptionService.getOrCreateKeyPair(user.uid);
       await updateDoc(doc(db, 'users_public', user.uid), { publicKey: keys.publicKey });
@@ -4992,7 +5027,10 @@ export default function App() {
                 {firestoreError}
               </div>
               <button 
-                onClick={() => window.location.reload()}
+                onClick={() => {
+                  setFirestoreError(null);
+                  setThreadReloadToken((value) => value + 1);
+                }}
                 className="text-[10px] font-bold uppercase tracking-wider text-amber-900 hover:underline"
               >
                 Retry

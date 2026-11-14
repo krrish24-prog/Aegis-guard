@@ -8,26 +8,57 @@ import { authenticatedFetch } from './apiClient';
 export class EncryptionService {
   private static STORAGE_PRIVATE_KEY = 'aegis_rsa_private_key';
   private static STORAGE_PUBLIC_KEY = 'aegis_rsa_public_key';
+  /** Fallback when the browser blocks localStorage (private mode, blocked cookies, in-app browser). */
+  private static memoryKeys = new Map<string, { publicKey: string; privateKey: string }>();
+
+  private static readStorage(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  private static writeStorage(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // Storage is unavailable; the in-memory copy still lets this session decrypt.
+    }
+  }
+
+  private static removeStorage(key: string): void {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
 
   static async getOrCreateKeyPair(userId: string, existingPublicKey?: string): Promise<{ publicKey: string; privateKey: string }> {
-    let priv = localStorage.getItem(`${this.STORAGE_PRIVATE_KEY}_${userId}`);
-    let pub = localStorage.getItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`);
+    if (!window.crypto?.subtle) {
+      throw new Error("Web Crypto is unavailable. Open Aegis Guard over HTTPS in a normal browser tab.");
+    }
+
+    const remembered = this.memoryKeys.get(userId);
+    let priv = this.readStorage(`${this.STORAGE_PRIVATE_KEY}_${userId}`) || remembered?.privateKey || null;
+    let pub = this.readStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`) || remembered?.publicKey || null;
 
     // Sync public key from Firestore when local copy is missing
     if (!pub && existingPublicKey) {
       pub = existingPublicKey;
-      localStorage.setItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`, pub);
+      this.writeStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`, pub);
     }
 
     // Migration for older keys stored without userId
     if (!priv || !pub) {
-      const oldPriv = localStorage.getItem(this.STORAGE_PRIVATE_KEY);
-      const oldPub = localStorage.getItem(this.STORAGE_PUBLIC_KEY);
+      const oldPriv = this.readStorage(this.STORAGE_PRIVATE_KEY);
+      const oldPub = this.readStorage(this.STORAGE_PUBLIC_KEY);
       if (oldPriv && oldPub) {
         priv = oldPriv;
         pub = oldPub;
-        localStorage.setItem(`${this.STORAGE_PRIVATE_KEY}_${userId}`, oldPriv);
-        localStorage.setItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`, oldPub);
+        this.writeStorage(`${this.STORAGE_PRIVATE_KEY}_${userId}`, oldPriv);
+        this.writeStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`, oldPub);
       }
     }
 
@@ -45,11 +76,13 @@ export class EncryptionService {
           false,
           ["encrypt"]
         );
+        this.memoryKeys.set(userId, { publicKey: pub, privateKey: priv });
         return { publicKey: pub, privateKey: priv };
       } catch (e) {
         console.warn(`[E2EE] Stored security keys are invalid or corrupted for ${userId}. Regenerating...`, e);
-        localStorage.removeItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`);
-        localStorage.removeItem(`${this.STORAGE_PRIVATE_KEY}_${userId}`);
+        this.removeStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`);
+        this.removeStorage(`${this.STORAGE_PRIVATE_KEY}_${userId}`);
+        this.memoryKeys.delete(userId);
       }
     }
 
@@ -71,10 +104,18 @@ export class EncryptionService {
     const pubStr = btoa(this.ab2str(pubExport));
     const privStr = btoa(this.ab2str(privExport));
 
-    localStorage.setItem(`${this.STORAGE_PUBLIC_KEY}_${userId}`, pubStr);
-    localStorage.setItem(`${this.STORAGE_PRIVATE_KEY}_${userId}`, privStr);
+    this.writeStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`, pubStr);
+    this.writeStorage(`${this.STORAGE_PRIVATE_KEY}_${userId}`, privStr);
+    this.memoryKeys.set(userId, { publicKey: pubStr, privateKey: privStr });
 
     return { publicKey: pubStr, privateKey: privStr };
+  }
+
+  /** Clears stored and in-memory keys so the next call generates a fresh pair. */
+  static resetKeyPair(userId: string): void {
+    this.removeStorage(`${this.STORAGE_PUBLIC_KEY}_${userId}`);
+    this.removeStorage(`${this.STORAGE_PRIVATE_KEY}_${userId}`);
+    this.memoryKeys.delete(userId);
   }
 
   public static str2ab(str: string): ArrayBuffer {
