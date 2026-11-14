@@ -5748,6 +5748,32 @@ export default function App() {
                                       <span className="text-xs font-bold">Photo upload failed</span>
                                     </div>
                                   )}
+                                  {msg.securityStatus?.isSafe &&
+                                    msg.status !== 'error' &&
+                                    msg.imageUrl !== 'uploading...' && (
+                                    <button
+                                      type="button"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        try {
+                                          const imageUrl = msg.decryptedImageUrl;
+                                          if (!imageUrl) return;
+                                          const mime = /^data:([^;,]+)/i.exec(imageUrl)?.[1] || 'image/jpeg';
+                                          const ext = (mime.split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace(/[^a-z0-9]/gi, '') || 'jpg';
+                                          const fileName = `aegis-photo-${format(new Date(), 'yyyyMMdd_HHmmss')}.${ext}`;
+                                          await downloadDecryptedFile(imageUrl, fileName);
+                                        } catch (err: any) {
+                                          console.error('Photo download failed', err);
+                                          alert(`Could not download the photo. ${err?.message || ''}`.trim());
+                                        }
+                                      }}
+                                      className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-black/60 px-2 py-1.5 text-[10px] font-bold text-white backdrop-blur transition-colors hover:bg-black/80"
+                                      title="Safe to download — save this photo"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                      <span className="hidden sm:inline">Save photo</span>
+                                    </button>
+                                  )}
                                 </div>
                               )}
                               {msg.decryptedFileName && (
