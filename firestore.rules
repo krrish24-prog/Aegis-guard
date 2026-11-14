@@ -22,6 +22,12 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.token.admin == true;
     }
 
+    // The project owner account can remove stale/duplicate user records from the
+    // directory without setting a custom claim first.
+    function isProjectOwner() {
+      return isAuthenticated() && getUserEmail() == 'krrish95star@gmail.com';
+    }
+
     function isMe(identifier) {
       return isAuthenticated() && identifier != null &&
              (getUserUid() == identifier || getUserEmail() == string(identifier).lower());
@@ -74,7 +80,7 @@ service cloud.firestore {
       allow read: if isMe(userId) || isAdmin();
       allow create: if isMe(userId) && hasNoPrivateKey();
       allow update: if isMe(userId) && hasNoPrivateKey();
-      allow delete: if isMe(userId) || isAdmin();
+      allow delete: if isMe(userId) || isAdmin() || isProjectOwner();
 
       // Contact lists.
       // Reads stay open to signed-in users: reciprocal discovery checks whether
@@ -101,7 +107,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isMe(userId) || isAdmin();
       allow update: if isMe(userId) || isAdmin();
-      allow delete: if isMe(userId) || isAdmin();
+      allow delete: if isMe(userId) || isAdmin() || isProjectOwner();
     }
 
     match /conversations/{chatId} {

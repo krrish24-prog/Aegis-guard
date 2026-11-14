@@ -1595,6 +1595,31 @@ export default function App() {
     setInstallPrompt(null);
   };
 
+  const deleteRegisteredUser = async (uid: string, email?: string) => {
+    if (!isUserAdmin || !uid) return;
+    const label = email || uid;
+    if (!window.confirm(`Delete ${label}? Their profile and account records are removed permanently.`)) return;
+
+    try {
+      await deleteDoc(doc(db, 'users_public', uid));
+    } catch (error: any) {
+      console.error('Delete user failed', error);
+      showToast(
+        error?.code === 'permission-denied'
+          ? 'Only the project admin can delete accounts. Deploy the Firestore rules first.'
+          : 'Could not delete this account'
+      );
+      return;
+    }
+
+    // The private profile is optional; some legacy accounts do not have one.
+    await deleteDoc(doc(db, 'users', uid)).catch(() => undefined);
+
+    setSelectedGroupParticipants(prev => prev.filter(id => id !== uid));
+    setAllUsers(prev => prev.filter(u => u.uid !== uid));
+    showToast(`${label} deleted`);
+  };
+
   const handleDeleteAccount = async () => {
     const currentUser = auth.currentUser;
     if (!user?.uid || !currentUser) return;
@@ -8834,8 +8859,10 @@ export default function App() {
                   <div className="space-y-2">
                     {allUsers.length > 0 ? (
                       allUsers.map((u, i) => (
-                        <button 
+                        <div
                           key={`${u.uid || u.email}-${i}`}
+                          role="button"
+                          tabIndex={0}
                           onClick={() => {
                             const participantId = u.uid;
                             if (!participantId || participantId.startsWith('temp-')) return;
@@ -8845,24 +8872,45 @@ export default function App() {
                               setSelectedGroupParticipants([...selectedGroupParticipants, participantId]);
                             }
                           }}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter' && e.key !== ' ') return;
+                            e.preventDefault();
+                            (e.currentTarget as HTMLDivElement).click();
+                          }}
                           className={cn(
-                            "w-full p-3 rounded-xl border flex items-center justify-between transition-all",
-                            selectedGroupParticipants.includes(u.uid || '') 
-                              ? "bg-emerald-50 border-emerald-200" 
+                            "w-full p-3 rounded-xl border flex items-center justify-between gap-2 transition-all cursor-pointer",
+                            selectedGroupParticipants.includes(u.uid || '')
+                              ? "bg-emerald-50 border-emerald-200"
                               : "bg-zinc-50 border-zinc-100 hover:bg-zinc-100"
                           )}
                         >
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 bg-zinc-200 rounded-lg flex items-center justify-center overflow-hidden">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 bg-zinc-200 rounded-lg flex items-center justify-center overflow-hidden shrink-0">
                               {u.photoURL ? <img src={u.photoURL} className="w-full h-full object-cover" alt="" /> : <UserIcon className="w-4 h-4 text-zinc-500" />}
                             </div>
-                            <div className="text-left">
-                              <p className="text-sm font-bold">{u.displayName}</p>
-                              <p className="text-[10px] text-zinc-400">{u.email}</p>
+                            <div className="text-left min-w-0">
+                              <p className="text-sm font-bold truncate">{u.displayName}</p>
+                              <p className="text-[10px] text-zinc-400 truncate">{u.email}</p>
                             </div>
                           </div>
-                          {selectedGroupParticipants.includes(u.uid || '') && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
-                        </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {selectedGroupParticipants.includes(u.uid || '') && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                            {isUserAdmin && u.uid && !u.uid.startsWith('temp-') && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void deleteRegisteredUser(u.uid, u.email);
+                                }}
+                                className="p-2 rounded-lg text-zinc-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                                title={`Delete ${u.email || u.displayName}`}
+                                aria-label={`Delete ${u.email || u.displayName}`}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       ))
                     ) : (
                       <div className="p-8 text-center bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
