@@ -5284,7 +5284,7 @@ export default function App() {
                       <span className="truncate max-w-[36vw] max-md:max-w-[56vw]">{selectedChat ? getChatDisplayName(selectedChat) : 'User'}</span>
                       {selectedChat?.isVerified && <ShieldCheck className="w-4 h-4 text-emerald-500" />}
                     </h2>
-                    <div className="flex items-center gap-1.5 mt-0.5">
+                    <div className="flex min-w-0 items-center gap-1.5 mt-0.5 overflow-hidden">
                       {(() => {
                         const typingUsers = selectedChat?.typing?.filter(uid => uid !== user?.uid) || [];
                         if (typingUsers.length > 0) {
@@ -5306,7 +5306,7 @@ export default function App() {
                                 <span className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Online</span>
                                 <span className="text-zinc-300 mx-1">•</span>
                                 <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
-                                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
+                                <span className="truncate text-[10px] text-zinc-400 font-medium uppercase tracking-wider">E2E Encrypted</span>
                               </>
                             );
                           } else if (contactStatus?.lastSeen) {
@@ -5316,7 +5316,7 @@ export default function App() {
                                 <span className="text-[10px] text-zinc-400 font-medium tracking-wider whitespace-nowrap">Last seen {timeStr}</span>
                                 <span className="text-zinc-300 mx-1">•</span>
                                 <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
-                                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
+                                <span className="truncate text-[10px] text-zinc-400 font-medium uppercase tracking-wider">E2E Encrypted</span>
                               </>
                             );
                           } else if (profile?.online) {
@@ -5326,7 +5326,7 @@ export default function App() {
                                 <span className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Online</span>
                                 <span className="text-zinc-300 mx-1">•</span>
                                 <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
-                                <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
+                                <span className="truncate text-[10px] text-zinc-400 font-medium uppercase tracking-wider">E2E Encrypted</span>
                               </>
                             );
                           } else if (profile?.lastSeen) {
@@ -5339,7 +5339,7 @@ export default function App() {
                                   <span className="text-[10px] text-zinc-400 font-medium tracking-wider whitespace-nowrap">Last seen today at {timeStr}</span>
                                   <span className="text-zinc-300 mx-1">•</span>
                                   <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
-                                  <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
+                                  <span className="truncate text-[10px] text-zinc-400 font-medium uppercase tracking-wider">E2E Encrypted</span>
                                 </>
                               );
                             }
@@ -5348,14 +5348,15 @@ export default function App() {
                         return (
                           <>
                             <Shield className="w-3 h-3 text-emerald-500 opacity-50" />
-                            <span className="text-[10px] text-zinc-400 font-medium uppercase tracking-wider flex-shrink-0">E2E Encrypted</span>
+                            <span className="truncate text-[10px] text-zinc-400 font-medium uppercase tracking-wider">E2E Encrypted</span>
                           </>
                         );
                       })()}
                     </div>
                   </div>
                 </div>
-                <div className="hidden md:flex items-center gap-1 shrink-0">
+                <div className="flex items-center gap-1 shrink-0">
+                  <div className="hidden items-center gap-1 md:flex">
                   {selectedChat?.type !== 'ai' && (
                     <>
                       <button 
@@ -5421,6 +5422,7 @@ export default function App() {
                       )}
                     </>
                   )}
+                  </div>
                   <div className="relative shrink-0">
                     <button 
                       onClick={() => setShowChatMenu(!showChatMenu)}
@@ -5500,7 +5502,7 @@ export default function App() {
               {/* Messages Area */}
               <div 
                 ref={messagesContainerRef}
-                className="flex-1 overflow-y-auto p-3 md:p-6 space-y-4 md:space-y-6 flex flex-col"
+                className="flex-1 overflow-y-auto overflow-x-hidden p-3 md:p-6 space-y-4 md:space-y-6 flex flex-col"
                 onScroll={(e) => {
                   const target = e.target as HTMLDivElement;
                   if (target.scrollTop === 0) {
@@ -5511,8 +5513,8 @@ export default function App() {
                 }}
               >
                 <div className="flex justify-center mb-8 shrink-0">
-                  <div className="px-3 py-1 bg-zinc-100 rounded-full text-[10px] font-semibold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-                    <Lock className="w-3 h-3" />
+                  <div className="flex max-w-full min-w-0 items-center gap-2 rounded-full bg-zinc-100 px-3 py-1 text-center text-[10px] font-semibold uppercase tracking-widest text-zinc-400">
+                    <Lock className="w-3 h-3 shrink-0" />
                     Messages are secured with AES-GCM encryption
                   </div>
                 </div>
