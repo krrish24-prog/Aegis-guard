@@ -5281,7 +5281,7 @@ export default function App() {
                   </button>
                   <div className="min-w-0 flex-1">
                     <h2 className="font-bold !text-zinc-900 leading-tight flex items-center gap-1 min-w-0">
-                      <span className="truncate max-w-[36vw] max-md:max-w-[34vw]">{selectedChat ? getChatDisplayName(selectedChat) : 'User'}</span>
+                      <span className="truncate max-w-[36vw] max-md:max-w-[56vw]">{selectedChat ? getChatDisplayName(selectedChat) : 'User'}</span>
                       {selectedChat?.isVerified && <ShieldCheck className="w-4 h-4 text-emerald-500" />}
                     </h2>
                     <div className="flex items-center gap-1.5 mt-0.5">
@@ -5355,7 +5355,7 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-1 shrink-0 max-md:overflow-x-auto max-md:max-w-[46vw]">
+                <div className="hidden md:flex items-center gap-1 shrink-0">
                   {selectedChat?.type !== 'ai' && (
                     <>
                       <button 
@@ -5421,16 +5421,51 @@ export default function App() {
                       )}
                     </>
                   )}
-                  <div className="relative">
+                  <div className="relative shrink-0">
                     <button 
                       onClick={() => setShowChatMenu(!showChatMenu)}
                       className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
                       title="Chat options"
+                      aria-label="Chat options"
+                      aria-expanded={showChatMenu}
                     >
                       <MoreVertical className="w-5 h-5" />
                     </button>
                     {showChatMenu && (
-                      <div className="absolute right-0 top-full mt-2 w-48 bg-white border border-zinc-100 rounded-xl shadow-xl z-20 transition-all">
+                      <>
+                        <div
+                          className="fixed inset-0 z-40 bg-black/20 md:hidden"
+                          onClick={() => setShowChatMenu(false)}
+                        />
+                        <div className="fixed inset-x-3 top-[4.5rem] z-50 max-h-[calc(100dvh-6rem)] overflow-y-auto overscroll-contain rounded-2xl border border-zinc-100 bg-white py-2 shadow-2xl md:absolute md:inset-x-auto md:right-0 md:top-full md:mt-2 md:w-56 md:max-h-[min(26rem,75vh)] md:overflow-y-auto md:rounded-xl md:py-0">
+                        <div className="md:hidden">
+                          <p className="px-4 pb-2 pt-1 text-[10px] font-black uppercase tracking-widest text-zinc-400">Chat options</p>
+                          {selectedChat.type !== 'ai' && (
+                            <button onClick={() => { setShowChatMenu(false); setShowChatSecurity(true); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                              <span>Security Check</span>
+                              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                            </button>
+                          )}
+                          {selectedChat.type === 'group' && (
+                            <button onClick={() => { setShowChatMenu(false); setShowGroupVerification(selectedChat); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                              <span>Group Verification</span>
+                              <Info className="h-4 w-4 text-zinc-400" />
+                            </button>
+                          )}
+                          <button onClick={() => { setShowChatMenu(false); void downloadChat(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                            <span>Download Chat Log</span>
+                            <FileText className="h-4 w-4 text-zinc-400" />
+                          </button>
+                          <button onClick={() => { setShowChatMenu(false); showComingSoonNotice('Video calls'); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                            <span>Video Call</span>
+                            <span className="flex items-center gap-2"><ComingSoonBadge compact /><Video className="h-4 w-4 text-zinc-400" /></span>
+                          </button>
+                          <button onClick={() => { setShowChatMenu(false); showComingSoonNotice('Voice calls'); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                            <span>Voice Call</span>
+                            <span className="flex items-center gap-2"><ComingSoonBadge compact /><Phone className="h-4 w-4 text-zinc-400" /></span>
+                          </button>
+                          <div className="my-1 h-px bg-zinc-100" />
+                        </div>
                         <button onClick={(e) => { 
                           e.stopPropagation();
                           clearChat(); 
@@ -5455,7 +5490,8 @@ export default function App() {
                             <button onClick={reportMalware} className="w-full text-left px-4 py-3 text-xs font-bold text-red-600 hover:bg-red-50">Report Malware</button>
                           </>
                         )}
-                      </div>
+                        </div>
+                      </>
                     )}
                   </div>
                 </div>
@@ -5959,8 +5995,8 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                <form onSubmit={sendMessage} className="flex items-center gap-3 max-md:gap-2 max-md:w-full max-md:min-w-0">
-                  <div className="flex items-center gap-1 max-md:max-w-[40vw] max-md:overflow-x-auto max-md:shrink-0">
+                <form onSubmit={sendMessage} className="flex flex-wrap md:flex-nowrap items-center gap-3 max-md:gap-2 max-md:w-full max-md:min-w-0">
+                  <div className="flex items-center gap-1 max-md:order-1 max-md:w-full max-md:shrink-0 max-md:justify-between max-md:pb-1">
                     {selectedChat?.type === 'group' && (
                       <div className="relative">
                         <button
@@ -6197,7 +6233,7 @@ export default function App() {
                       </>
                     )}
                   </div>
-                  <div className="flex-1 relative min-w-0">
+                  <div className="flex-1 relative min-w-0 max-md:order-2">
                     {selectedFile && (
                       <div className={cn(
                         "absolute left-0 -top-12 border rounded-xl p-2 flex items-center gap-2 shadow-sm",
@@ -6234,7 +6270,7 @@ export default function App() {
                     type="submit"
                     disabled={(!newMessage.trim() && !selectedImage && !selectedFile) || isSending}
                     className={cn(
-                      "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm shrink-0",
+                      "w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center transition-all shadow-sm shrink-0 max-md:order-3",
                       theme === 'glow' ? "bg-emerald-500 text-white hover:bg-emerald-600 shadow-emerald-500/20" :
                       "bg-zinc-900 text-white hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed"
                     )}
