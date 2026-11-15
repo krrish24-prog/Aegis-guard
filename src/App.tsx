@@ -6290,17 +6290,10 @@ export default function App() {
                         "relative p-2 rounded-lg cursor-pointer transition-all",
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
                       )} 
-                      title="Take Photo"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        showComingSoonNotice('Camera capture');
-                      }}
+                      title="Take a photo"
                     >
-                      <span className="absolute -top-2 -right-3 z-10">
-                        <ComingSoonBadge compact />
-                      </span>
                       <Camera className="w-5 h-5" />
-                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} disabled />
+                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} />
                     </label>
                     <label 
                       className={cn(
