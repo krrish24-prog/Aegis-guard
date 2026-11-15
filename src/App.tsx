@@ -363,8 +363,7 @@ interface ScheduledEvent {
   participants: string[];
   guestAttendees?: { name: string; contactDetail: string }[];
   meetingLink?: string;
-  googleEventId?: string;
-  googleCalendarLink?: string;
+  providerMeetingId?: string;
   status: 'scheduled' | 'cancelled' | 'completed';
 }
 
@@ -1475,7 +1474,7 @@ export default function App() {
     try {
       const eventRef = doc(collection(db, 'scheduled_events'));
       const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}`);
-      let meetDetails: { meetLink?: string; eventId?: string; htmlLink?: string } = {};
+      let meetingDetails: { meetingLink?: string; meetingId?: string } = {};
       if (showScheduleModal === 'meeting') {
         const meetRes = await authenticatedFetch('/api/meet/create', {
           method: 'POST',
@@ -1487,9 +1486,9 @@ export default function App() {
         });
         const meetPayload = await meetRes.json().catch(() => ({}));
         if (!meetRes.ok) {
-          throw new Error(meetPayload.error || 'Google Meet link could not be created.');
+          throw new Error(meetPayload.error || 'Zoom meeting could not be created.');
         }
-        meetDetails = meetPayload;
+        meetingDetails = meetPayload;
       }
       
       const newEvent: ScheduledEvent = {
@@ -1500,15 +1499,14 @@ export default function App() {
         scheduledAt: Timestamp.fromDate(scheduledAt),
         participants: [user.uid], // Start with creator, can add more logic later
         guestAttendees: scheduleGuests,
-        meetingLink: meetDetails.meetLink,
-        googleEventId: meetDetails.eventId,
-        googleCalendarLink: meetDetails.htmlLink,
+        meetingLink: meetingDetails.meetingLink,
+        providerMeetingId: meetingDetails.meetingId,
         status: 'scheduled'
       };
 
       await setDoc(eventRef, newEvent);
-      if (meetDetails.meetLink) {
-        showToast('Google Meet link created');
+      if (meetingDetails.meetingLink) {
+        showToast('Zoom meeting created');
       }
       setShowScheduleModal(null);
       setScheduleTitle('');
@@ -4924,16 +4922,13 @@ export default function App() {
       </button>
 
       <button 
-        onClick={() => showComingSoonNotice('Meetings')}
+        onClick={() => setActiveSection('meetings')}
         title={t.meetings}
         className={cn(
           "flex flex-col items-center gap-1 transition-all duration-300 relative",
           activeSection === 'meetings' ? "text-emerald-500 scale-110" : "text-zinc-500 hover:text-zinc-300"
         )}
       >
-        <span className="absolute -top-2 -right-7 z-10">
-          <ComingSoonBadge compact />
-        </span>
         <div className={cn(
           "p-2 rounded-xl transition-all",
           activeSection === 'meetings' && theme === 'glow' && "glow-emerald-side animate-glow"
@@ -6408,7 +6403,6 @@ export default function App() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <h2 className="text-2xl font-bold text-zinc-900">{t.meetings}</h2>
-            <ComingSoonBadge />
           </div>
           <div className="flex gap-3">
             <button 
@@ -6420,12 +6414,11 @@ export default function App() {
               <ComingSoonBadge compact />
             </button>
             <button 
-              onClick={() => showComingSoonNotice('Meeting integration')}
+              onClick={() => setShowScheduleModal('meeting')}
               className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all flex items-center gap-2"
             >
               <Video className="w-4 h-4" />
               Schedule Meeting
-              <ComingSoonBadge compact />
             </button>
           </div>
         </div>
@@ -6468,7 +6461,7 @@ export default function App() {
                           className="flex items-center gap-1 text-indigo-600 font-bold hover:underline"
                         >
                           <ExternalLink className="w-4 h-4" />
-                          <span>Google Meet</span>
+                          <span>Zoom Meeting</span>
                         </a>
                       )}
                     </div>

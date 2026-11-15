@@ -66,10 +66,10 @@ const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwr
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || "";
 const APPWRITE_BUCKET_ID = process.env.APPWRITE_BUCKET_ID || "aegis-media";
-const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || "primary";
-const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || "";
-const GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY = (process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || "").replace(/\\n/g, "\n");
-const GOOGLE_CALENDAR_IMPERSONATE = process.env.GOOGLE_CALENDAR_IMPERSONATE || "";
+const ZOOM_ACCOUNT_ID = process.env.ZOOM_ACCOUNT_ID || "";
+const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID || "";
+const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET || "";
+const ZOOM_HOST_USER_ID = process.env.ZOOM_HOST_USER_ID || "";
 
 const appwriteEndpointCandidates = () => {
   const endpoints = new Set<string>();
@@ -254,96 +254,57 @@ async function startServer() {
     throw new Error(`Appwrite request failed on all endpoints. ${errors.join(" | ")}`);
   };
 
-  const base64Url = (input: string | Buffer) =>
-    Buffer.from(input).toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
-
-  const getGoogleAccessToken = async () => {
-    if (!GOOGLE_SERVICE_ACCOUNT_EMAIL || !GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY) {
-      throw new Error("Google Meet is not configured on the server.");
+  const getZoomAccessToken = async () => {
+    if (!ZOOM_ACCOUNT_ID || !ZOOM_CLIENT_ID || !ZOOM_CLIENT_SECRET || !ZOOM_HOST_USER_ID) {
+      throw new Error("Zoom is not configured on the server. Add the Zoom account ID, client ID, client secret, and host user ID.");
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const header = { alg: "RS256", typ: "JWT" };
-    const claimSet: Record<string, unknown> = {
-      iss: GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      scope: "https://www.googleapis.com/auth/calendar.events",
-      aud: "https://oauth2.googleapis.com/token",
-      exp: now + 3600,
-      iat: now,
-    };
-    if (GOOGLE_CALENDAR_IMPERSONATE) {
-      claimSet.sub = GOOGLE_CALENDAR_IMPERSONATE;
-    }
-
-    const unsigned = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(claimSet))}`;
-    const signature = crypto.createSign("RSA-SHA256").update(unsigned).sign(GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY);
-    const assertion = `${unsigned}.${base64Url(signature)}`;
-
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+    const credentials = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
+    const tokenRes = await fetch(`https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(ZOOM_ACCOUNT_ID)}`, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion,
-      }),
+      headers: { Authorization: `Basic ${credentials}` },
     });
 
     const tokenText = await tokenRes.text();
     if (!tokenRes.ok) {
-      throw new Error(`Google token request failed (${tokenRes.status}): ${tokenText}`);
+      throw new Error(`Zoom token request failed (${tokenRes.status}): ${tokenText}`);
     }
     const token = JSON.parse(tokenText);
     return token.access_token as string;
   };
 
-  const createGoogleMeetEvent = async (params: {
+  const createZoomMeeting = async (params: {
     title: string;
     scheduledAt: string;
-    guests?: Array<{ name?: string; contactDetail?: string }>;
   }) => {
-    const accessToken = await getGoogleAccessToken();
+    const accessToken = await getZoomAccessToken();
     const start = new Date(params.scheduledAt);
     if (Number.isNaN(start.getTime())) {
       throw new Error("Invalid scheduled date/time.");
     }
-    const end = new Date(start.getTime() + 60 * 60 * 1000);
-    const attendees = (params.guests || [])
-      .map((guest) => String(guest.contactDetail || "").trim())
-      .filter((detail) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(detail))
-      .map((email) => ({ email }));
+    const meetingRes = await fetch(`https://api.zoom.us/v2/users/${encodeURIComponent(ZOOM_HOST_USER_ID)}/meetings`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        topic: params.title || "Aegis Meeting",
+        type: 2,
+        start_time: start.toISOString(),
+        duration: 60,
+        settings: { waiting_room: true },
+      }),
+    });
 
-    const eventRes = await fetch(
-      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(GOOGLE_CALENDAR_ID)}/events?conferenceDataVersion=1&sendUpdates=all`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          summary: params.title || "Aegis Meeting",
-          start: { dateTime: start.toISOString() },
-          end: { dateTime: end.toISOString() },
-          attendees,
-          conferenceData: {
-            createRequest: {
-              requestId: crypto.randomUUID(),
-              conferenceSolutionKey: { type: "hangoutsMeet" },
-            },
-          },
-        }),
-      }
-    );
-
-    const eventText = await eventRes.text();
-    if (!eventRes.ok) {
-      throw new Error(`Google Calendar event failed (${eventRes.status}): ${eventText}`);
+    const meetingText = await meetingRes.text();
+    if (!meetingRes.ok) {
+      throw new Error(`Zoom meeting creation failed (${meetingRes.status}): ${meetingText}`);
     }
-    const event = JSON.parse(eventText);
+    const meeting = JSON.parse(meetingText);
     return {
-      eventId: event.id,
-      htmlLink: event.htmlLink,
-      meetLink: event.hangoutLink || event.conferenceData?.entryPoints?.find((entry: any) => entry.entryPointType === "video")?.uri,
+      meetingId: String(meeting.id),
+      meetingLink: meeting.join_url as string,
     };
   };
 
@@ -572,15 +533,14 @@ async function startServer() {
     try {
       const title = cleanText(req.body?.title, 200) || "Aegis Meeting";
       const scheduledAt = cleanText(req.body?.scheduledAt, 100);
-      const guests = Array.isArray(req.body?.guests) ? req.body.guests.slice(0, 50) : [];
-      const result = await createGoogleMeetEvent({ title, scheduledAt, guests });
-      if (!result.meetLink) {
-        return res.status(502).json({ error: "Google created the event but did not return a Meet link.", details: result });
+      const result = await createZoomMeeting({ title, scheduledAt });
+      if (!result.meetingLink) {
+        return res.status(502).json({ error: "Zoom created the meeting but did not return a join link.", details: result });
       }
       res.json(result);
     } catch (error: any) {
-      console.error("Google Meet create error:", error);
-      res.status(500).json({ error: error.message || "Google Meet creation failed" });
+      console.error("Zoom meeting create error:", error);
+      res.status(500).json({ error: error.message || "Zoom meeting creation failed" });
     }
   });
 

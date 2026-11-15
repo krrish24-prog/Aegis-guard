@@ -35,11 +35,11 @@ services:
         sync: false
       - key: APPWRITE_BUCKET_ID
         value: aegis-media
-      - key: GOOGLE_CALENDAR_ID
-        value: primary
-      - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
+      - key: ZOOM_ACCOUNT_ID
         sync: false
-      - key: GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
+      - key: ZOOM_CLIENT_ID
         sync: false
-      - key: GOOGLE_CALENDAR_IMPERSONATE
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: ZOOM_HOST_USER_ID
         sync: false
