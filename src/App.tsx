@@ -38,6 +38,7 @@ import {
   getDocs,
   getDocFromServer,
   deleteDoc,
+  deleteField,
   writeBatch,
   arrayUnion,
   arrayRemove
@@ -791,6 +792,27 @@ export default function App() {
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedGroupParticipants, setSelectedGroupParticipants] = useState<string[]>([]);
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [groupMemberSearch, setGroupMemberSearch] = useState('');
+  const [showClearChatOptions, setShowClearChatOptions] = useState(false);
+  const [isClearingChat, setIsClearingChat] = useState(false);
+  const groupMemberOptions = useMemo(() => {
+    const usersByUid = new Map<string, UserProfile>();
+    allUsers.forEach(candidate => {
+      if (!candidate.uid || candidate.uid.startsWith('temp-') || candidate.uid === user?.uid) return;
+      const current = usersByUid.get(candidate.uid);
+      if (!current || (!current.email && candidate.email) || (!current.displayName && candidate.displayName)) {
+        usersByUid.set(candidate.uid, candidate);
+      }
+    });
+    return Array.from(usersByUid.values()).sort((a, b) => (a.displayName || a.email || '').localeCompare(b.displayName || b.email || ''));
+  }, [allUsers, user?.uid]);
+  const filteredGroupMemberOptions = useMemo(() => {
+    const search = groupMemberSearch.trim().toLowerCase();
+    if (!search) return groupMemberOptions;
+    return groupMemberOptions.filter(candidate =>
+      `${candidate.displayName || ''} ${candidate.email || ''}`.toLowerCase().includes(search)
+    );
+  }, [groupMemberOptions, groupMemberSearch]);
 
   useEffect(() => {
     if (selectedChatId && user) {
@@ -1066,12 +1088,15 @@ export default function App() {
 
   const createGroup = async () => {
     if (!newGroupName.trim() || !user) return;
+    const selectedUids = Array.from(new Set(selectedGroupParticipants)).filter(uid =>
+      uid !== user.uid && groupMemberOptions.some(candidate => candidate.uid === uid)
+    );
     setIsCreatingGroup(true);
     try {
       // Perform security analysis on the group before creation
       const verification = await SecurityService.analyzeGroup(
         newGroupName, 
-        selectedGroupParticipants.length + 1,
+        selectedUids.length + 1,
         `Created by ${profile?.displayName || user.email}`
       );
 
@@ -1080,10 +1105,7 @@ export default function App() {
         id: chatRef.id,
         type: 'group',
         groupName: newGroupName,
-        participants: normalizeParticipantList(
-          [user.uid, ...selectedGroupParticipants],
-          [{ uid: user.uid, email: user.email }, ...allUsers.map((u) => ({ uid: u.uid, email: u.email }))]
-        ),
+        participants: [user.uid, ...selectedUids],
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
         isVerified: verification.isVerified,
@@ -1098,6 +1120,7 @@ export default function App() {
       setShowNewGroup(false);
       setNewGroupName('');
       setSelectedGroupParticipants([]);
+      setGroupMemberSearch('');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'chats');
     } finally {
@@ -2314,42 +2337,77 @@ export default function App() {
     setUser(null);
   };
 
-  const clearChat = async () => {
-    if (!selectedChatId) {
-      console.log("clearChat: No selectedChatId");
-      return;
-    }
-    // Check if confirming using basic UI hack: 
-    // In iframe `confirm` throws or evaluates `false`.
-    
+  const clearChatForMe = async () => {
+    if (!selectedChatId || !user) return;
+    setIsClearingChat(true);
     try {
-      console.log("clearChat: Attempting to delete messages for:", selectedChatId);
-      const messagesQuery = collection(db, 'conversations', selectedChatId, 'messages');
-      const snapshot = await getDocs(messagesQuery);
-      console.log("clearChat: Found", snapshot.size, "messages");
+      const resetAt = Timestamp.now();
+      await updateDoc(doc(db, 'conversations', selectedChatId), {
+        [`resetAt_${user.uid}`]: resetAt,
+        [`unreadCount.${user.uid}`]: 0,
+      });
+      setChatResetTimestamps(prev => ({ ...prev, [selectedChatId]: resetAt }));
+      setMessages([]);
+      setShowClearChatOptions(false);
+      setShowChatMenu(false);
+      showToast('Chat cleared for you');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `conversations/${selectedChatId}`);
+    } finally {
+      setIsClearingChat(false);
+    }
+  };
 
-      // Selective-recipient messages are only cleared by their own recipients.
-      const privateSnapshot = user
-        ? await getDocs(query(
-            collection(db, 'conversations', selectedChatId, 'private_messages'),
-            where('visibleTo', 'array-contains', user.uid),
-          )).catch(() => null)
-        : null;
-
-      const docs = [...snapshot.docs, ...(privateSnapshot?.docs || [])];
+  const clearChatForEveryone = async () => {
+    if (!selectedChatId || !user) return;
+    setIsClearingChat(true);
+    try {
+      const messagesSnapshot = await getDocs(collection(db, 'conversations', selectedChatId, 'messages'));
+      const privateSnapshot = await getDocs(query(
+        collection(db, 'conversations', selectedChatId, 'private_messages'),
+        where('visibleTo', 'array-contains', user.uid),
+      )).catch(() => null);
+      const docs = [...messagesSnapshot.docs, ...(privateSnapshot?.docs || [])];
       for (let i = 0; i < docs.length; i += 500) {
         const batch = writeBatch(db);
-        docs.slice(i, i + 500).forEach(doc => batch.delete(doc.ref));
+        docs.slice(i, i + 500).forEach(messageDoc => batch.delete(messageDoc.ref));
         await batch.commit();
       }
-      
-      console.log("clearChat: Messages deleted");
+      await updateDoc(doc(db, 'conversations', selectedChatId), {
+        lastMessage: deleteField(),
+        unreadCount: {},
+        updatedAt: Timestamp.now(),
+      });
       setMessages([]);
+      setShowClearChatOptions(false);
       setShowChatMenu(false);
-      // alert('Chat cleared.'); // avoid alert in iframe
+      showToast('Shared chat history deleted for everyone');
     } catch (error) {
-      console.error("clearChat error:", error);
-      handleFirestoreError(error, OperationType.DELETE, `chats/${selectedChatId}/messages`);
+      handleFirestoreError(error, OperationType.DELETE, `conversations/${selectedChatId}/messages`);
+    } finally {
+      setIsClearingChat(false);
+    }
+  };
+
+  const deleteChatForMe = async () => {
+    if (!selectedChatId || !user) return;
+    setIsClearingChat(true);
+    try {
+      await updateDoc(doc(db, 'conversations', selectedChatId), {
+        deletedFor: arrayUnion(user.uid),
+        [`resetAt_${user.uid}`]: Timestamp.now(),
+        [`unreadCount.${user.uid}`]: 0,
+      });
+      setChats(prev => prev.filter(chat => chat.id !== selectedChatId));
+      setSelectedChatId(null);
+      setMessages([]);
+      setShowClearChatOptions(false);
+      setShowChatMenu(false);
+      showToast('Chat removed from your list');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `conversations/${selectedChatId}`);
+    } finally {
+      setIsClearingChat(false);
     }
   };
 
@@ -2922,11 +2980,13 @@ export default function App() {
       if (userInChat && !normalized.includes(user.uid)) {
         normalized = [...normalized, user.uid];
       }
-      allUsers.forEach((u) => {
-        if (chat.participants.includes(u.uid) && u.email && !normalized.includes(u.email.toLowerCase())) {
-          normalized.push(u.email.toLowerCase());
-        }
-      });
+      if (chat.type !== 'group') {
+        allUsers.forEach((u) => {
+          if (chat.participants.includes(u.uid) && u.email && !normalized.includes(u.email.toLowerCase())) {
+            normalized.push(u.email.toLowerCase());
+          }
+        });
+      }
 
       const sortedCurrent = [...chat.participants].sort().join(',');
       const sortedNormalized = [...normalized].sort().join(',');
@@ -5243,7 +5303,12 @@ export default function App() {
                     {t.newChat || "New Chat"}
                   </button>
                   <button 
-                    onClick={() => setShowNewGroup(true)}
+                    onClick={() => {
+                      setNewGroupName('');
+                      setSelectedGroupParticipants([]);
+                      setGroupMemberSearch('');
+                      setShowNewGroup(true);
+                    }}
                     className={cn(
                       "flex-1 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2",
                       theme === 'glow' ? "bg-emerald-900/40 text-emerald-500 hover:bg-emerald-900/60" : "bg-zinc-50 text-zinc-600 hover:bg-zinc-100"
@@ -5637,7 +5702,8 @@ export default function App() {
                         </div>
                         <button onClick={(e) => { 
                           e.stopPropagation();
-                          clearChat(); 
+                          setShowChatMenu(false);
+                          setShowClearChatOptions(true);
                         }} className="w-full text-left px-4 py-3 text-xs font-bold text-zinc-700 hover:bg-zinc-50">Clear Chat</button>
                         {selectedChat.type !== 'ai' && selectedChat.type !== 'group' && selectedChat.type !== 'saved' && (
                           <button onClick={async (e) => {
@@ -8944,7 +9010,12 @@ export default function App() {
                   </div>
                   <h2 className="text-xl font-bold">{t.createNewGroup || 'Create New Group'}</h2>
                 </div>
-                <button onClick={() => setShowNewGroup(false)} className="text-zinc-400 hover:text-zinc-600">
+                <button onClick={() => {
+                  setShowNewGroup(false);
+                  setNewGroupName('');
+                  setSelectedGroupParticipants([]);
+                  setGroupMemberSearch('');
+                }} className="text-zinc-400 hover:text-zinc-600">
                   <XCircle className="w-6 h-6" />
                 </button>
               </div>
@@ -8960,23 +9031,33 @@ export default function App() {
                   />
                 </div>
 
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="search"
+                    value={groupMemberSearch}
+                    onChange={(e) => setGroupMemberSearch(e.target.value)}
+                    placeholder="Search members by name or email..."
+                    aria-label="Search group members by name or email"
+                    className="w-full rounded-xl border border-zinc-100 bg-zinc-50 py-3 pl-10 pr-4 text-sm focus:ring-2 focus:ring-emerald-500/20"
+                  />
+                </div>
+
                 <div className="space-y-3">
-                  <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider ml-1">Select Participants</h4>
+                  <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider ml-1">Select Participants ({selectedGroupParticipants.length} selected)</h4>
                   <div className="space-y-2">
-                    {allUsers.length > 0 ? (
-                      allUsers.map((u, i) => (
+                    {filteredGroupMemberOptions.length > 0 ? (
+                      filteredGroupMemberOptions.map((u) => (
                         <div
-                          key={`${u.uid || u.email}-${i}`}
+                          key={u.uid}
                           role="button"
                           tabIndex={0}
                           onClick={() => {
                             const participantId = u.uid;
                             if (!participantId || participantId.startsWith('temp-')) return;
-                            if (selectedGroupParticipants.includes(participantId)) {
-                              setSelectedGroupParticipants(selectedGroupParticipants.filter(id => id !== participantId));
-                            } else {
-                              setSelectedGroupParticipants([...selectedGroupParticipants, participantId]);
-                            }
+                            setSelectedGroupParticipants(prev => prev.includes(participantId)
+                              ? prev.filter(id => id !== participantId)
+                              : [...prev, participantId]);
                           }}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -9021,8 +9102,7 @@ export default function App() {
                     ) : (
                       <div className="p-8 text-center bg-zinc-50 rounded-2xl border border-dashed border-zinc-200">
                         <UserPlus className="w-8 h-8 text-zinc-300 mx-auto mb-2" />
-                        <p className="text-xs text-zinc-500">No other users found yet.</p>
-                        <p className="text-[10px] text-zinc-400 mt-1">You can still create a group to test the verification feature.</p>
+                        <p className="text-xs text-zinc-500">{groupMemberSearch ? 'No users match that search.' : 'No other users found yet.'}</p>
                       </div>
                     )}
                   </div>
@@ -9676,6 +9756,70 @@ export default function App() {
         guests={scheduleGuests}
         setGuests={setScheduleGuests}
       />
+
+      <AnimatePresence>
+        {showClearChatOptions && selectedChat && (
+          <div className="fixed inset-0 z-[220] flex items-center justify-center p-4">
+            <motion.button
+              type="button"
+              aria-label="Close clear chat options"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowClearChatOptions(false)}
+              className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 12 }}
+              className="relative w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl"
+            >
+              <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-bold text-zinc-900">Clear chat</h2>
+                  <p className="mt-1 text-xs text-zinc-500">Choose what to remove from {selectedChat.groupName || 'this conversation'}.</p>
+                </div>
+                <button type="button" onClick={() => setShowClearChatOptions(false)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-100" title="Close">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  disabled={isClearingChat}
+                  onClick={() => void clearChatForMe()}
+                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left transition hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  <span className="block text-sm font-bold text-zinc-900">Clear for me</span>
+                  <span className="mt-1 block text-xs text-zinc-500">Hide this chat’s current message history from your account. Other participants keep their messages.</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingChat}
+                  onClick={() => void clearChatForEveryone()}
+                  className="w-full rounded-2xl border border-red-200 p-4 text-left transition hover:bg-red-50 disabled:opacity-50"
+                >
+                  <span className="block text-sm font-bold text-red-700">Delete for everyone</span>
+                  <span className="mt-1 block text-xs text-zinc-500">Permanently delete shared messages for all participants. Group messages private to other members are kept.</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingChat}
+                  onClick={() => void deleteChatForMe()}
+                  className="w-full rounded-2xl border border-zinc-200 p-4 text-left transition hover:bg-zinc-50 disabled:opacity-50"
+                >
+                  <span className="block text-sm font-bold text-zinc-900">Delete chat for me</span>
+                  <span className="mt-1 block text-xs text-zinc-500">Remove the conversation from your chat list. Other participants are not affected.</span>
+                </button>
+              </div>
+              <button type="button" disabled={isClearingChat} onClick={() => setShowClearChatOptions(false)} className="mt-4 w-full rounded-xl py-2 text-sm font-bold text-zinc-500 hover:bg-zinc-50 disabled:opacity-50">
+                Cancel
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {isChatCameraOpen && (
