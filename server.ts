@@ -66,10 +66,6 @@ const APPWRITE_ENDPOINT = (process.env.APPWRITE_ENDPOINT || "https://cloud.appwr
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || "";
 const APPWRITE_BUCKET_ID = process.env.APPWRITE_BUCKET_ID || "aegis-media";
-const ZOOM_ACCOUNT_ID = process.env.ZOOM_ACCOUNT_ID || "";
-const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID || "";
-const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET || "";
-const ZOOM_HOST_USER_ID = process.env.ZOOM_HOST_USER_ID || "";
 
 const appwriteEndpointCandidates = () => {
   const endpoints = new Set<string>();
@@ -254,57 +250,11 @@ async function startServer() {
     throw new Error(`Appwrite request failed on all endpoints. ${errors.join(" | ")}`);
   };
 
-  const getZoomAccessToken = async () => {
-    if (!ZOOM_ACCOUNT_ID || !ZOOM_CLIENT_ID || !ZOOM_CLIENT_SECRET || !ZOOM_HOST_USER_ID) {
-      throw new Error("Zoom is not configured on the server. Add the Zoom account ID, client ID, client secret, and host user ID.");
-    }
-
-    const credentials = Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString("base64");
-    const tokenRes = await fetch(`https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${encodeURIComponent(ZOOM_ACCOUNT_ID)}`, {
-      method: "POST",
-      headers: { Authorization: `Basic ${credentials}` },
-    });
-
-    const tokenText = await tokenRes.text();
-    if (!tokenRes.ok) {
-      throw new Error(`Zoom token request failed (${tokenRes.status}): ${tokenText}`);
-    }
-    const token = JSON.parse(tokenText);
-    return token.access_token as string;
-  };
-
-  const createZoomMeeting = async (params: {
-    title: string;
-    scheduledAt: string;
-  }) => {
-    const accessToken = await getZoomAccessToken();
-    const start = new Date(params.scheduledAt);
-    if (Number.isNaN(start.getTime())) {
-      throw new Error("Invalid scheduled date/time.");
-    }
-    const meetingRes = await fetch(`https://api.zoom.us/v2/users/${encodeURIComponent(ZOOM_HOST_USER_ID)}/meetings`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        topic: params.title || "Aegis Meeting",
-        type: 2,
-        start_time: start.toISOString(),
-        duration: 60,
-        settings: { waiting_room: true },
-      }),
-    });
-
-    const meetingText = await meetingRes.text();
-    if (!meetingRes.ok) {
-      throw new Error(`Zoom meeting creation failed (${meetingRes.status}): ${meetingText}`);
-    }
-    const meeting = JSON.parse(meetingText);
+  const createJitsiMeeting = () => {
+    const roomName = `aegis-${crypto.randomUUID().replace(/-/g, "")}`;
     return {
-      meetingId: String(meeting.id),
-      meetingLink: meeting.join_url as string,
+      meetingId: roomName,
+      meetingLink: `https://meet.jit.si/${roomName}`,
     };
   };
 
@@ -531,16 +481,10 @@ async function startServer() {
 
   app.post("/api/meet/create", async (req: AuthenticatedRequest, res) => {
     try {
-      const title = cleanText(req.body?.title, 200) || "Aegis Meeting";
-      const scheduledAt = cleanText(req.body?.scheduledAt, 100);
-      const result = await createZoomMeeting({ title, scheduledAt });
-      if (!result.meetingLink) {
-        return res.status(502).json({ error: "Zoom created the meeting but did not return a join link.", details: result });
-      }
-      res.json(result);
+      res.json(createJitsiMeeting());
     } catch (error: any) {
-      console.error("Zoom meeting create error:", error);
-      res.status(500).json({ error: error.message || "Zoom meeting creation failed" });
+      console.error("Jitsi meeting create error:", error);
+      res.status(500).json({ error: error.message || "Jitsi meeting link creation failed" });
     }
   });
 

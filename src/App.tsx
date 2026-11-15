@@ -1486,7 +1486,7 @@ export default function App() {
         });
         const meetPayload = await meetRes.json().catch(() => ({}));
         if (!meetRes.ok) {
-          throw new Error(meetPayload.error || 'Zoom meeting could not be created.');
+          throw new Error(meetPayload.error || 'Meeting link could not be created.');
         }
         meetingDetails = meetPayload;
       }
@@ -1506,7 +1506,7 @@ export default function App() {
 
       await setDoc(eventRef, newEvent);
       if (meetingDetails.meetingLink) {
-        showToast('Zoom meeting created');
+        showToast('Meeting link created');
       }
       setShowScheduleModal(null);
       setScheduleTitle('');
@@ -6461,7 +6461,7 @@ export default function App() {
                           className="flex items-center gap-1 text-indigo-600 font-bold hover:underline"
                         >
                           <ExternalLink className="w-4 h-4" />
-                          <span>Zoom Meeting</span>
+                          <span>Jitsi Meeting</span>
                         </a>
                       )}
                     </div>
