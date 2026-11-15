@@ -1533,9 +1533,9 @@ export default function App() {
     }
   };
 
-  const handleDeleteCompletedMeeting = async (event: ScheduledEvent) => {
-    if (!user || !isMeetingComplete(event)) return;
-    if (!window.confirm(`Delete completed meeting "${event.title}"?`)) return;
+  const handleDeleteMeeting = async (event: ScheduledEvent) => {
+    if (!user || event.type !== 'meeting') return;
+    if (!window.confirm(`Delete meeting "${event.title}" from Aegis?`)) return;
     try {
       await deleteDoc(doc(db, 'scheduled_events', event.id));
       showToast('Meeting deleted');
@@ -6582,11 +6582,11 @@ export default function App() {
                       Join
                     </a>
                   )}
-                  {isMeetingComplete(ev, meetingStatusTime) && (
+                  {ev.type === 'meeting' && (
                     <button
-                      onClick={() => void handleDeleteCompletedMeeting(ev)}
+                      onClick={() => void handleDeleteMeeting(ev)}
                       className="px-3 py-2 rounded-xl bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100 transition-all flex items-center gap-2"
-                      title="Delete completed meeting"
+                      title="Delete meeting from Aegis"
                     >
                       <Trash2 className="w-4 h-4" />
                       Delete
