@@ -1248,6 +1248,10 @@ export default function App() {
       });
   }, []);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [isChatCameraOpen, setIsChatCameraOpen] = useState(false);
+  const [chatCameraError, setChatCameraError] = useState<string | null>(null);
+  const chatCameraVideoRef = useRef<HTMLVideoElement>(null);
+  const chatCameraStreamRef = useRef<MediaStream | null>(null);
   const [selectedFile, setSelectedFile] = useState<{name: string, size: number, date: string, data?: string, file?: File} | null>(null);
   const [showSecurityReport, setShowSecurityReport] = useState<Message | null>(null);
   const [showGroupVerification, setShowGroupVerification] = useState<Chat | null>(null);
@@ -4049,24 +4053,105 @@ export default function App() {
     });
   };
 
+  const prepareChatImage = async (file: File) => {
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(reader.error || new Error('Could not read image'));
+        reader.readAsDataURL(file);
+      });
+      const imageForFirestore = base64.length > 520_000 ? await resizeImage(base64) : base64;
+      if (imageForFirestore.length > 700_000) {
+        showToast('This image is too large for secure sending. Please capture a smaller image.');
+        return false;
+      }
+      setSelectedImage(imageForFirestore);
+      return true;
+    } catch (error) {
+      console.error('Could not prepare chat image:', error);
+      showToast('Could not prepare this photo');
+      return false;
+    }
+  };
+
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const base64 = reader.result as string;
-        const imageForFirestore = base64.length > 520_000 ? await resizeImage(base64) : base64;
-        if (imageForFirestore.length > 700_000) {
-          alert("This image is too large for free encrypted sending. Please choose a smaller image or screenshot.");
-          return;
-        }
-        setSelectedImage(imageForFirestore);
-      };
-      reader.readAsDataURL(file);
-    }
+    if (file) void prepareChatImage(file);
     // Allow selecting the same file again.
     e.target.value = '';
   };
+
+  const stopChatCamera = () => {
+    chatCameraStreamRef.current?.getTracks().forEach(track => track.stop());
+    chatCameraStreamRef.current = null;
+    if (chatCameraVideoRef.current) chatCameraVideoRef.current.srcObject = null;
+    setIsChatCameraOpen(false);
+    setChatCameraError(null);
+  };
+
+  const openChatCamera = async () => {
+    setChatCameraError(null);
+    setIsChatCameraOpen(true);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setChatCameraError('Camera access requires a supported browser and a secure HTTPS connection.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      chatCameraStreamRef.current = stream;
+      if (chatCameraVideoRef.current) {
+        chatCameraVideoRef.current.srcObject = stream;
+        void chatCameraVideoRef.current.play().catch(() => undefined);
+      }
+    } catch (error) {
+      const cameraError = error as DOMException;
+      setChatCameraError(
+        cameraError.name === 'NotAllowedError' || cameraError.name === 'PermissionDeniedError'
+          ? 'Camera permission was denied. Allow camera access in your browser settings and try again.'
+          : cameraError.name === 'NotFoundError'
+            ? 'No camera was found on this device.'
+            : 'Could not start the camera. Check that it is connected and not being used by another app.'
+      );
+    }
+  };
+
+  const captureChatPhoto = async () => {
+    const video = chatCameraVideoRef.current;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) {
+      showToast('Camera is not ready yet');
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      showToast('Could not capture photo');
+      return;
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.88));
+    if (!blob) {
+      showToast('Could not capture photo');
+      return;
+    }
+    const capturedFile = new File([blob], `aegis-photo-${Date.now()}.jpg`, { type: 'image/jpeg' });
+    if (await prepareChatImage(capturedFile)) stopChatCamera();
+  };
+
+  useEffect(() => {
+    if (!isChatCameraOpen || !chatCameraStreamRef.current || !chatCameraVideoRef.current) return;
+    chatCameraVideoRef.current.srcObject = chatCameraStreamRef.current;
+    void chatCameraVideoRef.current.play().catch(() => undefined);
+  }, [isChatCameraOpen, chatCameraError]);
+
+  useEffect(() => () => {
+    chatCameraStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
 
   const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 
@@ -6285,16 +6370,17 @@ export default function App() {
                     >
                       <Mic className="w-5 h-5" />
                     </button>
-                    <label 
+                    <button
+                      type="button"
                       className={cn(
-                        "relative p-2 rounded-lg cursor-pointer transition-all",
+                        "p-2 rounded-lg transition-all",
                         theme === 'glow' ? "text-emerald-500 hover:bg-emerald-500/20" : "text-zinc-500 hover:bg-zinc-100"
-                      )} 
+                      )}
+                      onClick={() => void openChatCamera()}
                       title="Take a photo"
                     >
                       <Camera className="w-5 h-5" />
-                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handleImageSelect} />
-                    </label>
+                    </button>
                     <label 
                       className={cn(
                         "relative p-2 rounded-lg cursor-pointer transition-all",
@@ -9590,6 +9676,59 @@ export default function App() {
         guests={scheduleGuests}
         setGuests={setScheduleGuests}
       />
+
+      <AnimatePresence>
+        {isChatCameraOpen && (
+          <div className="fixed inset-0 z-[180] flex items-center justify-center p-4">
+            <motion.button
+              type="button"
+              aria-label="Close camera"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={stopChatCamera}
+              className="absolute inset-0 bg-zinc-950/80 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 12 }}
+              className="relative w-full max-w-2xl overflow-hidden rounded-3xl bg-zinc-950 shadow-2xl"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 px-5 py-4 text-white">
+                <div className="flex items-center gap-2 font-bold"><Camera className="h-5 w-5" /> Capture a photo</div>
+                <button type="button" onClick={stopChatCamera} className="rounded-lg p-2 text-zinc-300 hover:bg-white/10" title="Close camera">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="bg-black">
+                {chatCameraError ? (
+                  <div className="flex min-h-72 flex-col items-center justify-center gap-4 px-8 text-center text-white">
+                    <Camera className="h-10 w-10 text-zinc-500" />
+                    <p className="max-w-md text-sm text-zinc-300">{chatCameraError}</p>
+                    <button type="button" onClick={() => void openChatCamera()} className="rounded-xl bg-white/10 px-4 py-2 text-sm font-bold hover:bg-white/15">
+                      Try camera again
+                    </button>
+                  </div>
+                ) : (
+                  <video ref={chatCameraVideoRef} autoPlay playsInline muted className="max-h-[65vh] min-h-60 w-full object-contain" />
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-3 p-4 text-white">
+                <p className="text-xs text-zinc-400">Captured photos appear in the composer before you send them.</p>
+                <button
+                  type="button"
+                  disabled={!!chatCameraError}
+                  onClick={() => void captureChatPhoto()}
+                  className="flex shrink-0 items-center gap-2 rounded-xl bg-emerald-500 px-5 py-3 text-sm font-bold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Camera className="h-4 w-4" /> Capture
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {showSecurityDashboard && user && (
         <SecurityDashboard
