@@ -367,6 +367,12 @@ interface ScheduledEvent {
   status: 'scheduled' | 'cancelled' | 'completed';
 }
 
+const isMeetingComplete = (event: ScheduledEvent, now = Date.now()) =>
+  event.type === 'meeting' && (
+    event.status === 'completed' ||
+    (event.status === 'scheduled' && event.scheduledAt.toDate().getTime() + 60 * 60 * 1000 <= now)
+  );
+
 interface Chat {
   id: string;
   type: 'direct' | 'group' | 'saved' | 'ai';
@@ -1444,6 +1450,7 @@ export default function App() {
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultBusy, setVaultBusy] = useState<string | null>(null);
   const [scheduledEvents, setScheduledEvents] = useState<ScheduledEvent[]>([]);
+  const [meetingStatusTime, setMeetingStatusTime] = useState(Date.now());
   const [showScheduleModal, setShowScheduleModal] = useState<'call' | 'meeting' | null>(null);
   const [scheduleTitle, setScheduleTitle] = useState('');
   const [scheduleDate, setScheduleDate] = useState('');
@@ -1519,6 +1526,18 @@ export default function App() {
       handleFirestoreError(error, OperationType.CREATE, 'scheduled_events');
     } finally {
       setIsScheduling(false);
+    }
+  };
+
+  const handleDeleteCompletedMeeting = async (event: ScheduledEvent) => {
+    if (!user || !isMeetingComplete(event)) return;
+    if (!window.confirm(`Delete completed meeting "${event.title}"?`)) return;
+    try {
+      await deleteDoc(doc(db, 'scheduled_events', event.id));
+      showToast('Meeting deleted');
+    } catch (error) {
+      showToast('Could not delete meeting');
+      handleFirestoreError(error, OperationType.DELETE, 'scheduled_events');
     }
   };
 
@@ -1910,6 +1929,11 @@ export default function App() {
     initSavedMessages();
     initAegisGuardChat();
   }, [user]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setMeetingStatusTime(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const submitFeedback = async () => {
     if (!feedback.trim() || !user) return;
@@ -6479,11 +6503,21 @@ export default function App() {
                       Join
                     </a>
                   )}
+                  {isMeetingComplete(ev, meetingStatusTime) && (
+                    <button
+                      onClick={() => void handleDeleteCompletedMeeting(ev)}
+                      className="px-3 py-2 rounded-xl bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100 transition-all flex items-center gap-2"
+                      title="Delete completed meeting"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete
+                    </button>
+                  )}
                   <span className={cn(
                     "px-3 py-1 rounded-full text-xs font-bold uppercase tracking-widest",
-                    ev.status === 'scheduled' ? "bg-emerald-100 text-emerald-700 animate-pulse" : "bg-zinc-100 text-zinc-600"
+                    !isMeetingComplete(ev, meetingStatusTime) && ev.status === 'scheduled' ? "bg-emerald-100 text-emerald-700 animate-pulse" : "bg-zinc-100 text-zinc-600"
                   )}>
-                    {ev.status}
+                    {isMeetingComplete(ev, meetingStatusTime) ? 'completed' : ev.status}
                   </span>
                 </div>
               </div>
