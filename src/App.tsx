@@ -2224,12 +2224,15 @@ export default function App() {
     const incomingQuery = query(
       collection(db, 'call_sessions'),
       where('calleeId', '==', user.uid),
-      where('status', '==', 'ringing'),
-      orderBy('startedAt', 'desc'),
-      limit(1),
     );
     const unsubscribe = onSnapshot(incomingQuery, snapshot => {
-      const callDoc = snapshot.docs[0];
+      // Keep the listener on the single-field callee index. The old compound
+      // status/startedAt query silently failed on deployments missing that
+      // composite index, so neither device ever displayed the incoming call.
+      const ringingCalls = snapshot.docs
+        .filter(callDoc => callDoc.data().status === 'ringing')
+        .sort((a, b) => (b.data().startedAt?.toMillis?.() || 0) - (a.data().startedAt?.toMillis?.() || 0));
+      const callDoc = ringingCalls[0];
       if (!callDoc) {
         currentIncomingId = '';
         setIncomingCall(null);
@@ -2936,7 +2939,10 @@ export default function App() {
   const resolveCallTargetUid = async (identifier: string) => {
     if (!identifier.includes('@')) return identifier;
     const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', identifier.toLowerCase()), limit(1)));
-    return snap.empty ? identifier : (snap.docs[0].data() as UserProfile).uid;
+    // Never write an email into calleeId: incoming listeners and rules are
+    // keyed by Firebase UID, so that would create a call no device can receive.
+    if (snap.empty) throw new Error('Could not find this contact account. Refresh contacts and try again.');
+    return snap.docs[0].id;
   };
 
   const attachCallerSignaling = (roomId: string, calleeId: string) => {
