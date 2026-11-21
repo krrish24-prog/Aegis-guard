@@ -469,6 +469,25 @@ interface StatusUpdate {
   progress?: number;
 }
 
+interface CallTranscriptEntry {
+  speakerId: string;
+  text: string;
+  createdAt: number;
+}
+
+const CALL_TRANSCRIPT_LANGUAGES = [
+  { code: 'en-US', label: 'English (US)' },
+  { code: 'en-GB', label: 'English (UK)' },
+  { code: 'hi-IN', label: 'Hindi' },
+  { code: 'bn-IN', label: 'Bengali' },
+  { code: 'ta-IN', label: 'Tamil' },
+  { code: 'te-IN', label: 'Telugu' },
+  { code: 'ur-PK', label: 'Urdu' },
+  { code: 'es-ES', label: 'Spanish' },
+  { code: 'fr-FR', label: 'French' },
+  { code: 'ar-SA', label: 'Arabic' },
+];
+
 const assessVishingTranscript = (transcript: string): SecurityAnalysis => {
   const text = transcript.toLowerCase();
   const indicators = [
@@ -1167,6 +1186,7 @@ export default function App() {
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [activeCallType, setActiveCallType] = useState<'voice' | 'video' | null>(null);
   const [videoPatternStatus, setVideoPatternStatus] = useState<'waiting' | 'monitoring' | 'warning'>('waiting');
+  const [callTranscriptLanguage, setCallTranscriptLanguage] = useState('en-US');
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const getCallSettings = () => ({
@@ -1203,7 +1223,7 @@ export default function App() {
     let shouldRecognize = true;
     recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.lang = navigator.language || 'en-US';
+    recognition.lang = callTranscriptLanguage;
     recognition.onstart = () => {
       setIsCalling(true);
       setCallGuardStatus('Listening for common vishing warning signs');
@@ -1215,14 +1235,24 @@ export default function App() {
         if (result.isFinal && result[0]?.transcript?.trim()) newLines.push(result[0].transcript.trim());
       }
       if (!newLines.length) return;
-      const nextTranscript = [...callTranscriptRef.current, ...newLines].slice(-24);
+      const entries = newLines.map(text => ({
+        speakerId: user?.uid || 'unknown',
+        text,
+        createdAt: Date.now(),
+      }));
+      const nextTranscript = [...callTranscriptRef.current, ...entries].slice(-40);
       callTranscriptRef.current = nextTranscript;
       setCallTranscript(nextTranscript);
-      const analysis = assessVishingTranscript(nextTranscript.join(' ').slice(-6000));
+      const analysis = assessVishingTranscript(nextTranscript.map(entry => entry.text).join(' ').slice(-6000));
       setCallSecurityStatus(analysis);
       if (!analysis.isSafe && !callThreatWarnedRef.current) {
         callThreatWarnedRef.current = true;
         showToast('Vishing warning: pause and independently verify this caller');
+      }
+      if (activeCallSessionId && entries.length) {
+        void updateDoc(doc(db, 'call_sessions', activeCallSessionId), {
+          transcriptEntries: arrayUnion(...entries),
+        }).catch(error => console.warn('Could not share live call transcript:', error));
       }
     };
     recognition.onerror = (event: any) => {
@@ -1256,7 +1286,7 @@ export default function App() {
       recognition.onend = null;
       try { recognition.stop(); } catch { /* Recognition may not have started. */ }
     };
-  }, [activeVideoCall, profile?.callSettings?.vishingGuard]);
+  }, [activeVideoCall, profile?.callSettings?.vishingGuard, callTranscriptLanguage]);
 
   useEffect(() => {
     if (!activeVideoCall || activeCallType !== 'video') {
@@ -1272,11 +1302,21 @@ export default function App() {
     if (!context) return;
     let priorFrame: Uint8ClampedArray | null = null;
     let lowMotionSamples = 0;
+    let repeatedPatternSamples = 0;
+    const recentFrameSignatures: string[] = [];
     const interval = window.setInterval(() => {
       if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
       try {
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
         const currentFrame = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        let signature = '';
+        for (let index = 0; index < currentFrame.length; index += 16) {
+          signature += String.fromCharCode(currentFrame[index] >> 4, currentFrame[index + 1] >> 4, currentFrame[index + 2] >> 4);
+        }
+        const repeatsRecentFrame = recentFrameSignatures.slice(0, -2).includes(signature);
+        repeatedPatternSamples = repeatsRecentFrame ? repeatedPatternSamples + 1 : Math.max(0, repeatedPatternSamples - 1);
+        recentFrameSignatures.push(signature);
+        if (recentFrameSignatures.length > 12) recentFrameSignatures.shift();
         if (priorFrame) {
           let difference = 0;
           for (let index = 0; index < currentFrame.length; index += 4) {
@@ -1286,7 +1326,7 @@ export default function App() {
           }
           const averageChange = difference / ((canvas.width * canvas.height * 3) * 255);
           lowMotionSamples = averageChange < 0.0015 ? lowMotionSamples + 1 : 0;
-          setVideoPatternStatus(lowMotionSamples >= 10 ? 'warning' : 'monitoring');
+          setVideoPatternStatus(lowMotionSamples >= 10 || repeatedPatternSamples >= 3 ? 'warning' : 'monitoring');
         }
         priorFrame = new Uint8ClampedArray(currentFrame);
       } catch {
@@ -1368,8 +1408,8 @@ export default function App() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeVideoCall]);
   const [isCalling, setIsCalling] = useState<boolean>(false);
-  const [callTranscript, setCallTranscript] = useState<string[]>([]);
-  const callTranscriptRef = useRef<string[]>([]);
+  const [callTranscript, setCallTranscript] = useState<CallTranscriptEntry[]>([]);
+  const callTranscriptRef = useRef<CallTranscriptEntry[]>([]);
   const speechRecognitionRef = useRef<any>(null);
   const [callGuardStatus, setCallGuardStatus] = useState('Vishing guard is starting');
   const [callConnectionStatus, setCallConnectionStatus] = useState<'ringing' | 'connected'>('ringing');
@@ -2189,7 +2229,7 @@ export default function App() {
       }
       const call = { id: callDoc.id, ...callDoc.data() } as CallSession;
       if (call.startedAt?.toMillis && Date.now() - call.startedAt.toMillis() > 60_000) {
-        void updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() }).catch(console.error);
+        void updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(console.error);
         return;
       }
       currentIncomingId = call.id;
@@ -2210,7 +2250,21 @@ export default function App() {
     if (!activeCallSessionId) return;
     const unsubscribe = onSnapshot(doc(db, 'call_sessions', activeCallSessionId), snapshot => {
       if (!snapshot.exists()) return;
-      const status = snapshot.data().status;
+      const callData = snapshot.data();
+      const transcriptEntries = Array.isArray(callData.transcriptEntries)
+        ? (callData.transcriptEntries as CallTranscriptEntry[]).slice(-40)
+        : [];
+      if (transcriptEntries.length) {
+        callTranscriptRef.current = transcriptEntries;
+        setCallTranscript(transcriptEntries);
+        const transcriptAnalysis = assessVishingTranscript(transcriptEntries.map(entry => entry.text).join(' ').slice(-6000));
+        setCallSecurityStatus(transcriptAnalysis);
+        if (!transcriptAnalysis.isSafe && !callThreatWarnedRef.current) {
+          callThreatWarnedRef.current = true;
+          showToast('Vishing warning: pause and independently verify this caller');
+        }
+      }
+      const status = callData.status;
       if (status === 'connected') {
         setCallConnectionStatus('connected');
         if (callTimeoutRef.current !== null) window.clearTimeout(callTimeoutRef.current);
@@ -2965,6 +3019,7 @@ export default function App() {
       await updateDoc(doc(db, 'call_sessions', call.id), {
         status: 'missed',
         endedAt: serverTimestamp(),
+        transcriptEntries: deleteField(),
       }).catch(() => undefined);
       await updateDoc(doc(db, 'meeting_rooms', call.roomId), {
         status: 'ended',
@@ -2979,7 +3034,7 @@ export default function App() {
   const declineIncomingCall = async () => {
     if (!incomingCall) return;
     await updateDoc(doc(db, 'meeting_rooms', incomingCall.roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(console.error);
-    await updateDoc(doc(db, 'call_sessions', incomingCall.id), { status: 'missed', endedAt: serverTimestamp() }).catch(console.error);
+    await updateDoc(doc(db, 'call_sessions', incomingCall.id), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(console.error);
     setIncomingCall(null);
     setIncomingCallerName('');
   };
@@ -3038,14 +3093,14 @@ export default function App() {
       callTimeoutRef.current = window.setTimeout(() => {
         void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
           if (callDoc.exists() && callDoc.data().status === 'ringing') {
-            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() });
+            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() });
           }
         }).catch(console.error);
       }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Video call failed:', err);
-      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(() => undefined);
       if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
       webrtcRef.current?.dispose();
       webrtcRef.current = null;
@@ -3107,14 +3162,14 @@ export default function App() {
       callTimeoutRef.current = window.setTimeout(() => {
         void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
           if (callDoc.exists() && callDoc.data().status === 'ringing') {
-            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() });
+            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() });
           }
         }).catch(console.error);
       }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Voice call failed:', err);
-      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(() => undefined);
       if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
       webrtcRef.current?.dispose();
       webrtcRef.current = null;
@@ -4831,6 +4886,7 @@ export default function App() {
       await updateDoc(doc(db, 'call_sessions', activeCallSessionId), {
         status: 'ended',
         endedAt: serverTimestamp(),
+        transcriptEntries: deleteField(),
       }).catch(console.error);
     }
     webrtcRef.current = null;
@@ -9518,10 +9574,28 @@ export default function App() {
                 {/* Real-time Transcript & Analysis */}
                 <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="p-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl h-36 overflow-y-auto">
-                    <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Real-time Transcript</h4>
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h4 className="flex items-center gap-1.5 text-[10px] font-bold text-zinc-400 uppercase tracking-widest"><Users className="h-3.5 w-3.5" /> Both speakers</h4>
+                      <select
+                        value={callTranscriptLanguage}
+                        onChange={event => setCallTranscriptLanguage(event.target.value)}
+                        className="max-w-32 rounded-lg border border-white/10 bg-zinc-900 px-2 py-1 text-[10px] text-white outline-none"
+                        aria-label="Transcript language for your microphone"
+                      >
+                        {CALL_TRANSCRIPT_LANGUAGES.map(language => <option key={language.code} value={language.code}>{language.label}</option>)}
+                      </select>
+                    </div>
+                    <div className="mb-2 text-[10px] text-zinc-500">Each person selects the language spoken on their device.</div>
                     <div className="space-y-2">
-                      {callTranscript.map((line, i) => (
-                        <p key={i} className="text-xs text-white/80 leading-relaxed italic">"{line}"</p>
+                      {callTranscript.map((entry, i) => (
+                        <div key={`${entry.speakerId}-${entry.createdAt}-${i}`} className="rounded-lg bg-white/5 p-2">
+                          <div className="mb-1 flex items-center gap-1 text-[10px] font-bold text-emerald-300">
+                            <UserIcon className="h-3 w-3" />
+                            <span>{entry.speakerId === user?.uid ? 'You' : activeCallPeerName}</span>
+                            {entry.createdAt > 0 && <time className="ml-auto font-normal text-zinc-500">{format(new Date(entry.createdAt), 'HH:mm:ss')}</time>}
+                          </div>
+                          <p className="text-xs leading-relaxed text-white/85">{entry.text}</p>
+                        </div>
                       ))}
                       {isCalling && (
                         <div className="flex gap-1 mt-2">
@@ -9567,7 +9641,7 @@ export default function App() {
                       "p-3 backdrop-blur-md border rounded-2xl h-36 overflow-y-auto",
                       videoPatternStatus === 'warning' ? "bg-amber-500/20 border-amber-500/40" : "bg-black/40 border-white/10"
                     )}>
-                      <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">Video pattern check · experimental</h4>
+                      <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">Video pattern check · basic</h4>
                       <div className="flex items-center gap-2 mb-2">
                         {videoPatternStatus === 'warning'
                           ? <ShieldAlert className="w-4 h-4 text-amber-400" />
@@ -9578,8 +9652,8 @@ export default function App() {
                       </div>
                       <p className="text-[11px] text-white/70 leading-relaxed">
                         {videoPatternStatus === 'warning'
-                          ? 'The video changed very little for about 10 seconds. This can also happen when someone is still or the connection is poor; it does not confirm a deepfake.'
-                          : 'This checks for very low frame-to-frame motion only. It cannot identify a person or reliably detect face swaps.'}
+                          ? 'Frames showed very little motion or a repeating pattern. Stillness and poor connectivity can also cause this; it does not confirm a deepfake.'
+                          : 'Checks low-motion and repeated-frame patterns locally. It is not a trained model and cannot verify identity or reliably detect face swaps.'}
                       </p>
                     </div>
                   )}
