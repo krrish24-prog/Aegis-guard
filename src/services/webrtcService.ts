@@ -1,7 +1,6 @@
 import { db } from '../firebase';
 import {
-  arrayUnion,
-  collection, doc, setDoc, updateDoc, onSnapshot,
+  arrayUnion, collection, doc, setDoc, updateDoc, onSnapshot,
   serverTimestamp, query, where
 } from 'firebase/firestore';
 import type { MeetingRoom, CallSession, CallType } from '../types';
@@ -24,6 +23,7 @@ export class WebRTCService {
   private localStream: MediaStream | null = null;
   private roomId: string | null = null;
   private userId: string | null = null;
+  private pendingCandidates: RTCIceCandidateInit[] = [];
 
   static getIceServers(): RTCIceServer[] {
     return ICE_SERVERS;
@@ -46,15 +46,20 @@ export class WebRTCService {
     this.peerConnection.onicecandidate = async (event) => {
       if (event.candidate && this.roomId && this.userId) {
         await updateDoc(doc(db, 'meeting_rooms', this.roomId), {
-          [`signaling.${this.userId}.iceCandidate`]: event.candidate.toJSON(),
+          [`signaling.${this.userId}.iceCandidates`]: arrayUnion(event.candidate.toJSON()),
         }).catch(() => null);
       }
     };
 
     this.peerConnection.ontrack = (event) => {
-      const remoteVideo = document.getElementById('remote-video') as HTMLVideoElement;
-      if (remoteVideo && event.streams[0]) {
-        remoteVideo.srcObject = event.streams[0];
+      const remoteStream = event.streams[0];
+      if (!remoteStream) return;
+      if (event.track.kind === 'audio') {
+        const remoteAudio = document.getElementById('remote-audio') as HTMLAudioElement | null;
+        if (remoteAudio) remoteAudio.srcObject = remoteStream;
+      } else {
+        const remoteVideo = document.getElementById('remote-video') as HTMLVideoElement | null;
+        if (remoteVideo) remoteVideo.srcObject = remoteStream;
       }
     };
   }
@@ -142,17 +147,31 @@ export class WebRTCService {
 
   async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
     await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(answer));
+    await this.flushPendingCandidates();
   }
 
   async handleOffer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
     await this.peerConnection!.setRemoteDescription(new RTCSessionDescription(offer));
+    await this.flushPendingCandidates();
     const answer = await this.peerConnection!.createAnswer();
     await this.peerConnection!.setLocalDescription(answer);
     return answer;
   }
 
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
-    await this.peerConnection?.addIceCandidate(new RTCIceCandidate(candidate));
+    if (!this.peerConnection) return;
+    if (!this.peerConnection.remoteDescription) {
+      this.pendingCandidates.push(candidate);
+      return;
+    }
+    await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+  }
+
+  private async flushPendingCandidates(): Promise<void> {
+    const candidates = this.pendingCandidates.splice(0);
+    for (const candidate of candidates) {
+      await this.peerConnection?.addIceCandidate(new RTCIceCandidate(candidate));
+    }
   }
 
   toggleAudio(enabled: boolean): void {
@@ -163,11 +182,16 @@ export class WebRTCService {
     this.localStream?.getVideoTracks().forEach((t) => { t.enabled = enabled; });
   }
 
-  async endCall(): Promise<void> {
+  dispose(): void {
     this.localStream?.getTracks().forEach((t) => t.stop());
     this.peerConnection?.close();
     this.peerConnection = null;
     this.localStream = null;
+    this.pendingCandidates = [];
+  }
+
+  async endCall(): Promise<void> {
+    this.dispose();
 
     if (this.roomId) {
       await updateDoc(doc(db, 'meeting_rooms', this.roomId), {

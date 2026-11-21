@@ -469,6 +469,35 @@ interface StatusUpdate {
   progress?: number;
 }
 
+const assessVishingTranscript = (transcript: string): SecurityAnalysis => {
+  const text = transcript.toLowerCase();
+  const indicators = [
+    { label: 'Requests for passwords, PINs, or one-time codes', pattern: /\b(password|passcode|pin|otp|one[- ]time code|verification code|security code|cvv|social security number)\b.{0,55}\b(send|share|read|tell|give|provide|confirm|verify)\b|\b(send|share|read|tell|give|provide|confirm|verify)\b.{0,55}\b(password|passcode|pin|otp|one[- ]time code|verification code|security code|cvv|social security number)\b/ },
+    { label: 'Remote access or screen sharing request', pattern: /\b(anydesk|teamviewer|remote access|screen sharing|install this app|download this app)\b/ },
+    { label: 'Unusual payment request', pattern: /\b(gift card|wire transfer|crypto(currency)?|bitcoin|western union|moneygram)\b/ },
+    { label: 'Urgent pressure or threat', pattern: /\b(immediately|right now|within minutes|act now|urgent|account (will be|is) (frozen|locked|suspended)|arrest(ed)?|legal action)\b/ },
+    { label: 'Authority or support impersonation', pattern: /\b(bank security|fraud department|government agent|police officer|tax department|microsoft support|apple support|technical support)\b/ },
+    { label: 'Request to keep the call secret', pattern: /\b(don't tell anyone|do not tell anyone|keep this (secret|confidential)|don't hang up|do not hang up)\b/ },
+  ];
+  const matches = indicators.filter(indicator => indicator.pattern.test(text));
+  const sensitiveRequest = matches.some(match => match.label.startsWith('Requests for'));
+  const highRisk = sensitiveRequest || matches.some(match => match.label.startsWith('Remote access') || match.label.startsWith('Unusual payment'));
+  const suspicious = highRisk || matches.length >= 2;
+  return {
+    isSafe: !suspicious,
+    score: suspicious ? Math.max(5, 45 - matches.length * 10) : matches.length ? 75 : 96,
+    threatType: suspicious ? 'phishing' : 'none',
+    summary: suspicious
+      ? 'This conversation contains common voice-phishing warning signs. Stop before sharing codes, passwords, money, or device access. Contact the organization using a number you already trust.'
+      : matches.length
+        ? 'A possible pressure tactic was heard. Verify the caller independently before taking action.'
+        : 'No common vishing phrases detected so far. A clean scan does not prove the caller is legitimate.',
+    points: matches.length ? matches.map(match => match.label) : ['No known vishing indicators detected in the current transcript.'],
+    steganographyReport: 'Not applicable to calls.',
+    isAnalyzed: true,
+  };
+};
+
 // --- Components ---
 
 const SplashScreen = () => (
@@ -1136,6 +1165,8 @@ export default function App() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [isMicOn, setIsMicOn] = useState(true);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [activeCallType, setActiveCallType] = useState<'voice' | 'video' | null>(null);
+  const [videoPatternStatus, setVideoPatternStatus] = useState<'waiting' | 'monitoring' | 'warning'>('waiting');
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const getCallSettings = () => ({
@@ -1148,6 +1179,122 @@ export default function App() {
     vishingGuard: profile?.callSettings?.vishingGuard ?? true,
     deepfakeScan: profile?.callSettings?.deepfakeScan ?? true,
   });
+
+  useEffect(() => {
+    if (!activeVideoCall) {
+      setIsCalling(false);
+      setCallGuardStatus('Vishing guard is idle');
+      return;
+    }
+    if (profile?.callSettings?.vishingGuard === false) {
+      setIsCalling(false);
+      setCallGuardStatus('Vishing guard is turned off in call settings');
+      return;
+    }
+
+    const SpeechRecognitionConstructor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognitionConstructor) {
+      setIsCalling(false);
+      setCallGuardStatus('Live speech recognition is not supported in this browser');
+      return;
+    }
+
+    const recognition = new SpeechRecognitionConstructor();
+    let shouldRecognize = true;
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = navigator.language || 'en-US';
+    recognition.onstart = () => {
+      setIsCalling(true);
+      setCallGuardStatus('Listening for common vishing warning signs');
+    };
+    recognition.onresult = (event: any) => {
+      const newLines: string[] = [];
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (result.isFinal && result[0]?.transcript?.trim()) newLines.push(result[0].transcript.trim());
+      }
+      if (!newLines.length) return;
+      const nextTranscript = [...callTranscriptRef.current, ...newLines].slice(-24);
+      callTranscriptRef.current = nextTranscript;
+      setCallTranscript(nextTranscript);
+      const analysis = assessVishingTranscript(nextTranscript.join(' ').slice(-6000));
+      setCallSecurityStatus(analysis);
+      if (!analysis.isSafe && !callThreatWarnedRef.current) {
+        callThreatWarnedRef.current = true;
+        showToast('Vishing warning: pause and independently verify this caller');
+      }
+    };
+    recognition.onerror = (event: any) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        shouldRecognize = false;
+        setIsCalling(false);
+        setCallGuardStatus('Speech recognition permission was denied');
+      } else if (event.error !== 'aborted' && event.error !== 'no-speech') {
+        setCallGuardStatus('Speech recognition is temporarily unavailable');
+      }
+    };
+    recognition.onend = () => {
+      if (!shouldRecognize) return;
+      window.setTimeout(() => {
+        if (!shouldRecognize) return;
+        try { recognition.start(); } catch { /* A start already in progress will resume on its next end event. */ }
+      }, 350);
+    };
+    speechRecognitionRef.current = recognition;
+    setCallGuardStatus('Starting speech monitoring');
+    try {
+      recognition.start();
+    } catch {
+      shouldRecognize = false;
+      setIsCalling(false);
+      setCallGuardStatus('Could not start speech recognition');
+    }
+    return () => {
+      shouldRecognize = false;
+      if (speechRecognitionRef.current === recognition) speechRecognitionRef.current = null;
+      recognition.onend = null;
+      try { recognition.stop(); } catch { /* Recognition may not have started. */ }
+    };
+  }, [activeVideoCall, profile?.callSettings?.vishingGuard]);
+
+  useEffect(() => {
+    if (!activeVideoCall || activeCallType !== 'video') {
+      setVideoPatternStatus('waiting');
+      return;
+    }
+    const video = document.getElementById('remote-video') as HTMLVideoElement | null;
+    if (!video) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 18;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return;
+    let priorFrame: Uint8ClampedArray | null = null;
+    let lowMotionSamples = 0;
+    const interval = window.setInterval(() => {
+      if (!video.videoWidth || !video.videoHeight || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      try {
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const currentFrame = context.getImageData(0, 0, canvas.width, canvas.height).data;
+        if (priorFrame) {
+          let difference = 0;
+          for (let index = 0; index < currentFrame.length; index += 4) {
+            difference += Math.abs(currentFrame[index] - priorFrame[index]);
+            difference += Math.abs(currentFrame[index + 1] - priorFrame[index + 1]);
+            difference += Math.abs(currentFrame[index + 2] - priorFrame[index + 2]);
+          }
+          const averageChange = difference / ((canvas.width * canvas.height * 3) * 255);
+          lowMotionSamples = averageChange < 0.0015 ? lowMotionSamples + 1 : 0;
+          setVideoPatternStatus(lowMotionSamples >= 10 ? 'warning' : 'monitoring');
+        }
+        priorFrame = new Uint8ClampedArray(currentFrame);
+      } catch {
+        setVideoPatternStatus('waiting');
+      }
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [activeVideoCall, activeCallType, hasRemoteVideo]);
 
   const toggleCamera = async () => {
     if (isCameraOn) {
@@ -1181,25 +1328,10 @@ export default function App() {
         setIsCameraOn(true);
       } catch (err: any) {
         console.error("Camera access denied:", err);
-        
-        // Fallback for preview/iframe environments where permissions might be restricted
-        const canvas = document.createElement('canvas');
-        canvas.width = 640;
-        canvas.height = 360;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.fillStyle = '#18181b';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.fillStyle = '#a1a1aa';
-          ctx.font = '20px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText('Camera Simulated Mode (Access Denied)', 320, 180);
-        }
-        
-        const fallbackStream = canvas.captureStream(10);
-        setLocalStream(fallbackStream);
-        setIsCameraOn(true);
-        alert(`Camera access denied. Using simulated video stream. Error: ${err.message || "Permission denied"}`);
+        setIsCameraOn(false);
+        showToast(err?.name === 'NotAllowedError'
+          ? 'Camera permission was denied. You can continue with audio.'
+          : 'Could not start the camera. You can continue with audio.');
       }
     }
   };
@@ -1218,6 +1350,12 @@ export default function App() {
   }, [isCameraOn, localStream]);
   const [isCalling, setIsCalling] = useState<boolean>(false);
   const [callTranscript, setCallTranscript] = useState<string[]>([]);
+  const callTranscriptRef = useRef<string[]>([]);
+  const speechRecognitionRef = useRef<any>(null);
+  const [callGuardStatus, setCallGuardStatus] = useState('Vishing guard is starting');
+  const [callConnectionStatus, setCallConnectionStatus] = useState<'ringing' | 'connected'>('ringing');
+  const [activeCallPeerName, setActiveCallPeerName] = useState('Contact');
+  const callThreatWarnedRef = useRef(false);
   const [callSecurityStatus, setCallSecurityStatus] = useState<SecurityAnalysis | null>(null);
   const [deepfakeRisk, setDeepfakeRisk] = useState<number | null>(null);
   const [deepfakeStatus, setDeepfakeStatus] = useState<string>('Analyzing facial micro-expressions...');
@@ -1592,6 +1730,9 @@ export default function App() {
   const [incomingCallerName, setIncomingCallerName] = useState('');
   const webrtcRef = useRef<WebRTCService | null>(null);
   const callSignalingUnsubscribeRef = useRef<(() => void) | null>(null);
+  const callSessionUnsubscribeRef = useRef<(() => void) | null>(null);
+  const callTimeoutRef = useRef<number | null>(null);
+  const endingCallRef = useRef(false);
   const [uploadProgressRecord, setUploadProgressRecord] = useState<Record<string, number>>({});
   const [theme, setTheme] = useState<'light' | 'dark' | 'glow'>('dark');
   const [toast, setToast] = useState<{message: string, show: boolean}>({message: '', show: false});
@@ -2010,11 +2151,61 @@ export default function App() {
       setIncomingCallerName('');
       return;
     }
-    // Calls are intentionally locked as a coming-soon feature.
-    // Keep the incoming-call UI closed and avoid attaching restricted listeners.
-    setIncomingCall(null);
-    setIncomingCallerName('');
+    let currentIncomingId = '';
+    const incomingQuery = query(
+      collection(db, 'call_sessions'),
+      where('calleeId', '==', user.uid),
+      where('status', '==', 'ringing'),
+      orderBy('startedAt', 'desc'),
+      limit(1),
+    );
+    const unsubscribe = onSnapshot(incomingQuery, snapshot => {
+      const callDoc = snapshot.docs[0];
+      if (!callDoc) {
+        currentIncomingId = '';
+        setIncomingCall(null);
+        setIncomingCallerName('');
+        return;
+      }
+      const call = { id: callDoc.id, ...callDoc.data() } as CallSession;
+      if (call.startedAt?.toMillis && Date.now() - call.startedAt.toMillis() > 60_000) {
+        void updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() }).catch(console.error);
+        return;
+      }
+      currentIncomingId = call.id;
+      setIncomingCall(call);
+      void getDoc(doc(db, 'users_public', call.callerId)).then(caller => {
+        if (currentIncomingId === call.id) {
+          setIncomingCallerName(caller.exists() ? String(caller.data().displayName || 'Contact') : 'Contact');
+        }
+      }).catch(() => setIncomingCallerName('Contact'));
+    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
+    return () => {
+      currentIncomingId = '';
+      unsubscribe();
+    };
   }, [user]);
+
+  useEffect(() => {
+    if (!activeCallSessionId) return;
+    const unsubscribe = onSnapshot(doc(db, 'call_sessions', activeCallSessionId), snapshot => {
+      if (!snapshot.exists()) return;
+      const status = snapshot.data().status;
+      if (status === 'connected') {
+        setCallConnectionStatus('connected');
+        if (callTimeoutRef.current !== null) window.clearTimeout(callTimeoutRef.current);
+        callTimeoutRef.current = null;
+      } else if ((status === 'missed' || status === 'ended') && !endingCallRef.current) {
+        showToast(status === 'missed' ? 'Call was not answered' : 'The other person ended the call');
+        void endVideoCall(false);
+      }
+    }, error => console.error('Call status listener failed:', error));
+    callSessionUnsubscribeRef.current = unsubscribe;
+    return () => {
+      unsubscribe();
+      if (callSessionUnsubscribeRef.current === unsubscribe) callSessionUnsubscribeRef.current = null;
+    };
+  }, [activeCallSessionId]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -2633,10 +2824,16 @@ export default function App() {
       if (calleeSignal.answer && !handledAnswer) {
         handledAnswer = true;
         await webrtcRef.current?.handleAnswer(calleeSignal.answer).catch(console.error);
+        setCallConnectionStatus('connected');
+        if (callTimeoutRef.current !== null) window.clearTimeout(callTimeoutRef.current);
+        callTimeoutRef.current = null;
       }
-      const candidate = calleeSignal.iceCandidate;
-      const candidateKey = candidate ? JSON.stringify(candidate) : '';
-      if (candidate && !addedCandidates.has(candidateKey)) {
+      const candidates: RTCIceCandidateInit[] = Array.isArray(calleeSignal.iceCandidates)
+        ? calleeSignal.iceCandidates
+        : calleeSignal.iceCandidate ? [calleeSignal.iceCandidate] : [];
+      for (const candidate of candidates) {
+        const candidateKey = JSON.stringify(candidate);
+        if (addedCandidates.has(candidateKey)) continue;
         addedCandidates.add(candidateKey);
         await webrtcRef.current?.addIceCandidate(candidate).catch(console.error);
       }
@@ -2653,9 +2850,12 @@ export default function App() {
         const answer = await webrtcRef.current.handleOffer(callerSignal.offer);
         await webrtcRef.current.publishLocalDescription('answer', answer);
       }
-      const candidate = callerSignal.iceCandidate;
-      const candidateKey = candidate ? JSON.stringify(candidate) : '';
-      if (candidate && !addedCandidates.has(candidateKey)) {
+      const candidates: RTCIceCandidateInit[] = Array.isArray(callerSignal.iceCandidates)
+        ? callerSignal.iceCandidates
+        : callerSignal.iceCandidate ? [callerSignal.iceCandidate] : [];
+      for (const candidate of candidates) {
+        const candidateKey = JSON.stringify(candidate);
+        if (addedCandidates.has(candidateKey)) continue;
         addedCandidates.add(candidateKey);
         await webrtcRef.current?.addIceCandidate(candidate).catch(console.error);
       }
@@ -2664,41 +2864,60 @@ export default function App() {
 
   const acceptIncomingCall = async () => {
     if (!incomingCall || !user) return;
+    const call = incomingCall;
     try {
       const callSettings = getCallSettings();
-      await WebRTCService.joinMeetingRoom(incomingCall.roomId, user.uid);
-      await updateDoc(doc(db, 'call_sessions', incomingCall.id), { status: 'connected' });
-      setActiveCallSessionId(incomingCall.id);
-      setActiveMeetingRoom(incomingCall.roomId);
+      const wantsVideo = call.type === 'video' || call.type === 'meeting';
       webrtcRef.current = new WebRTCService();
-      await webrtcRef.current.initialize(user.uid, incomingCall.roomId);
-      const wantsVideo = incomingCall.type === 'video' || incomingCall.type === 'meeting';
+      await webrtcRef.current.initialize(user.uid, call.roomId);
       const stream = await webrtcRef.current.startLocalMedia(
         wantsVideo && callSettings.startWithCamera,
-        callSettings.startWithMic,
+        true,
         callSettings
       );
+      webrtcRef.current.toggleAudio(callSettings.startWithMic);
+      await WebRTCService.joinMeetingRoom(call.roomId, user.uid);
+      await updateDoc(doc(db, 'call_sessions', call.id), { status: 'connected' });
+      setActiveCallSessionId(call.id);
+      setActiveMeetingRoom(call.roomId);
+      setActiveCallType(wantsVideo ? 'video' : 'voice');
+      setActiveCallPeerName(incomingCallerName || 'Contact');
+      setCallConnectionStatus('connected');
+      setCallTranscript([]);
+      callTranscriptRef.current = [];
+      callThreatWarnedRef.current = false;
+      setCallSecurityStatus(null);
       setLocalStream(stream);
       setIsCameraOn(wantsVideo && callSettings.startWithCamera && stream.getVideoTracks().length > 0);
       setIsMicOn(callSettings.startWithMic && stream.getAudioTracks().length > 0);
       setActiveVideoCall(true);
       setHasRemoteVideo(false);
-      setIsCalling(!!callSettings.vishingGuard || (wantsVideo && !!callSettings.deepfakeScan));
-      setDeepfakeRisk(wantsVideo && callSettings.deepfakeScan ? 0 : null);
-      setDeepfakeStatus(wantsVideo && callSettings.deepfakeScan ? 'Monitoring live video authenticity...' : 'Voice call active.');
       callSignalingUnsubscribeRef.current?.();
-      callSignalingUnsubscribeRef.current = attachReceiverSignaling(incomingCall.roomId, incomingCall.callerId);
+      callSignalingUnsubscribeRef.current = attachReceiverSignaling(call.roomId, call.callerId);
       setIncomingCall(null);
       setIncomingCallerName('');
       showToast('Call connected');
     } catch (err) {
       console.error('Accept call failed:', err);
+      webrtcRef.current?.dispose();
+      webrtcRef.current = null;
+      await updateDoc(doc(db, 'call_sessions', call.id), {
+        status: 'missed',
+        endedAt: serverTimestamp(),
+      }).catch(() => undefined);
+      await updateDoc(doc(db, 'meeting_rooms', call.roomId), {
+        status: 'ended',
+        endedAt: serverTimestamp(),
+      }).catch(() => undefined);
+      setIncomingCall(null);
+      setIncomingCallerName('');
       showToast('Could not answer call');
     }
   };
 
   const declineIncomingCall = async () => {
     if (!incomingCall) return;
+    await updateDoc(doc(db, 'meeting_rooms', incomingCall.roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(console.error);
     await updateDoc(doc(db, 'call_sessions', incomingCall.id), { status: 'missed', endedAt: serverTimestamp() }).catch(console.error);
     setIncomingCall(null);
     setIncomingCallerName('');
@@ -2706,78 +2925,128 @@ export default function App() {
 
   const startRealVideoCall = async () => {
     if (!user || !selectedChatId) return;
+    let roomId: string | null = null;
+    let sessionId: string | null = null;
     try {
       const chat = chats.find((c) => c.id === selectedChatId);
       const targetId = getDirectCallTargetId(chat);
-      if (!targetId) {
+      if (!chat || !targetId) {
         showToast('Select a contact chat to start a call');
         return;
       }
       const calleeId = await resolveCallTargetUid(targetId);
       const callSettings = getCallSettings();
       const room = await WebRTCService.createMeetingRoom(user.uid, 'video', selectedChatId, [calleeId]);
-      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'video');
-      setActiveCallSessionId(session.id);
+      roomId = room.id;
       setActiveMeetingRoom(room.id);
       webrtcRef.current = new WebRTCService();
       await webrtcRef.current.initialize(user.uid, room.id);
       const stream = await webrtcRef.current.startLocalMedia(
         callSettings.startWithCamera,
-        callSettings.startWithMic,
+        true,
         callSettings
       );
+      webrtcRef.current.toggleAudio(callSettings.startWithMic);
+      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'video');
+      sessionId = session.id;
+      setActiveCallSessionId(session.id);
+      setActiveCallType('video');
+      setActiveCallPeerName(getChatDisplayName(chat));
+      setCallConnectionStatus('ringing');
+      setCallTranscript([]);
+      callTranscriptRef.current = [];
+      callThreatWarnedRef.current = false;
+      setCallSecurityStatus(null);
       setLocalStream(stream);
       setIsCameraOn(callSettings.startWithCamera && stream.getVideoTracks().length > 0);
       setIsMicOn(callSettings.startWithMic && stream.getAudioTracks().length > 0);
       setActiveVideoCall(true);
       setHasRemoteVideo(false);
-      setIsCalling(!!callSettings.vishingGuard || !!callSettings.deepfakeScan);
-      setDeepfakeRisk(callSettings.deepfakeScan ? 0 : null);
-      setDeepfakeStatus(callSettings.deepfakeScan ? 'Monitoring live video authenticity...' : 'Deepfake scanning is off.');
       const offer = await webrtcRef.current.createOffer();
       await webrtcRef.current.publishLocalDescription('offer', offer);
       callSignalingUnsubscribeRef.current?.();
       callSignalingUnsubscribeRef.current = attachCallerSignaling(room.id, calleeId);
+      callTimeoutRef.current = window.setTimeout(() => {
+        void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
+          if (callDoc.exists() && callDoc.data().status === 'ringing') {
+            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() });
+          }
+        }).catch(console.error);
+      }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Video call failed:', err);
+      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
+      webrtcRef.current?.dispose();
+      webrtcRef.current = null;
+      setActiveCallSessionId(null);
+      setActiveMeetingRoom(null);
+      setActiveCallType(null);
+      setLocalStream(null);
+      setActiveVideoCall(false);
       showToast('Could not start real video call');
     }
   };
 
   const startRealVoiceCall = async () => {
     if (!user || !selectedChatId) return;
+    let roomId: string | null = null;
+    let sessionId: string | null = null;
     try {
       const chat = chats.find((c) => c.id === selectedChatId);
       const targetId = getDirectCallTargetId(chat);
-      if (!targetId) {
+      if (!chat || !targetId) {
         showToast('Select a contact chat to start a call');
         return;
       }
       const calleeId = await resolveCallTargetUid(targetId);
       const callSettings = getCallSettings();
       const room = await WebRTCService.createMeetingRoom(user.uid, 'voice', selectedChatId, [calleeId]);
-      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'voice');
-      setActiveCallSessionId(session.id);
+      roomId = room.id;
       setActiveMeetingRoom(room.id);
       webrtcRef.current = new WebRTCService();
       await webrtcRef.current.initialize(user.uid, room.id);
-      const stream = await webrtcRef.current.startLocalMedia(false, callSettings.startWithMic, callSettings);
+      const stream = await webrtcRef.current.startLocalMedia(false, true, callSettings);
+      webrtcRef.current.toggleAudio(callSettings.startWithMic);
+      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'voice');
+      sessionId = session.id;
+      setActiveCallSessionId(session.id);
+      setActiveCallType('voice');
+      setActiveCallPeerName(getChatDisplayName(chat));
+      setCallConnectionStatus('ringing');
+      setCallTranscript([]);
+      callTranscriptRef.current = [];
+      callThreatWarnedRef.current = false;
+      setCallSecurityStatus(null);
       setLocalStream(stream);
       setIsCameraOn(false);
       setIsMicOn(callSettings.startWithMic && stream.getAudioTracks().length > 0);
       setActiveVideoCall(true);
       setHasRemoteVideo(false);
-      setIsCalling(!!callSettings.vishingGuard);
-      setDeepfakeRisk(null);
-      setDeepfakeStatus('Voice call active.');
       const offer = await webrtcRef.current.createOffer();
       await webrtcRef.current.publishLocalDescription('offer', offer);
       callSignalingUnsubscribeRef.current?.();
       callSignalingUnsubscribeRef.current = attachCallerSignaling(room.id, calleeId);
+      callTimeoutRef.current = window.setTimeout(() => {
+        void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
+          if (callDoc.exists() && callDoc.data().status === 'ringing') {
+            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp() });
+          }
+        }).catch(console.error);
+      }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Voice call failed:', err);
+      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
+      webrtcRef.current?.dispose();
+      webrtcRef.current = null;
+      setActiveCallSessionId(null);
+      setActiveMeetingRoom(null);
+      setActiveCallType(null);
+      setLocalStream(null);
+      setActiveVideoCall(false);
       showToast('Could not start real voice call');
     }
   };
@@ -4472,60 +4741,17 @@ export default function App() {
     alert("Chat log exported and saved to your device.");
   };
 
-  const startVideoCall = () => {
-    setActiveVideoCall(true);
-    setIsCalling(true);
-    setCallTranscript([]);
-    setCallSecurityStatus(null);
-    setDeepfakeRisk(0);
-    setDeepfakeStatus('Establishing baseline biometric geometry...');
-    
-    // Simulate a call transcript for vishing detection demo
-    const simulatedTranscript = [
-      "Hello, this is Mark from your bank's security department.",
-      "We've detected suspicious activity on your account.",
-      "I need you to verify your identity by providing your one-time password.",
-      "It's urgent, otherwise your account will be frozen in 5 minutes."
-    ];
-    
-    let i = 0;
-    const interval = setInterval(async () => {
-      if (i < simulatedTranscript.length) {
-        setCallTranscript(prev => [...prev, simulatedTranscript[i]]);
-        
-        // Deepfake simulation progression
-        if (i === 0) setDeepfakeStatus('Evaluating spectral artifacts and blinks...');
-        if (i === 1) {
-          setDeepfakeRisk(25);
-          setDeepfakeStatus('Minor facial pulse irregularities detected.');
-        }
-        if (i === 2) {
-          setDeepfakeRisk(65);
-          setDeepfakeStatus('Warning: High mismatch in lip-sync and audio track.');
-        }
-        if (i === 3) {
-          setDeepfakeRisk(93);
-          setDeepfakeStatus('CRITICAL: AI-generated visual patterns matching known deepfake models.');
-        }
-        
-        // Analyze the transcript so far for vishing
-        const currentTranscript = simulatedTranscript.slice(0, i + 1).join(" ");
-        const analysis = await SecurityService.analyzeCall(currentTranscript);
-        setCallSecurityStatus(analysis);
-        
-        i++;
-      } else {
-        clearInterval(interval);
-        setIsCalling(false);
-      }
-    }, 3000);
-  };
-
-  const endVideoCall = async () => {
+  const endVideoCall = async (updateSessionStatus = true) => {
+    if (endingCallRef.current) return;
+    endingCallRef.current = true;
+    if (callTimeoutRef.current !== null) window.clearTimeout(callTimeoutRef.current);
+    callTimeoutRef.current = null;
     callSignalingUnsubscribeRef.current?.();
     callSignalingUnsubscribeRef.current = null;
+    callSessionUnsubscribeRef.current?.();
+    callSessionUnsubscribeRef.current = null;
     await webrtcRef.current?.endCall().catch(console.error);
-    if (activeCallSessionId) {
+    if (updateSessionStatus && activeCallSessionId) {
       await updateDoc(doc(db, 'call_sessions', activeCallSessionId), {
         status: 'ended',
         endedAt: serverTimestamp(),
@@ -4538,13 +4764,17 @@ export default function App() {
     setHasRemoteVideo(false);
     setActiveMeetingRoom(null);
     setActiveCallSessionId(null);
+    setActiveCallType(null);
+    setActiveCallPeerName('Contact');
+    setCallConnectionStatus('ringing');
     setIsCalling(false);
     setIsCameraOn(false);
     setIsMicOn(true);
     setCallTranscript([]);
+    callTranscriptRef.current = [];
+    callThreatWarnedRef.current = false;
     setCallSecurityStatus(null);
-    setDeepfakeRisk(null);
-    setDeepfakeStatus('Analyzing facial micro-expressions...');
+    endingCallRef.current = false;
   };
 
   const searchUsers = async (queryStr: string) => {
@@ -4888,8 +5118,7 @@ export default function App() {
             <ToggleRow icon={Volume2} title="Echo Cancellation" subtitle="Reduce speaker feedback during calls" settingKey="echoCancellation" value={callSettings.echoCancellation} />
             <ToggleRow icon={ShieldCheck} title="Noise Suppression" subtitle="Filter steady background noise" settingKey="noiseSuppression" value={callSettings.noiseSuppression} />
             <ToggleRow icon={Volume2} title="Auto Gain Control" subtitle="Balance microphone volume automatically" settingKey="autoGainControl" value={callSettings.autoGainControl} />
-            <ToggleRow icon={ShieldAlert} title="AI Vishing Guard" subtitle="Keep call risk analysis active" settingKey="vishingGuard" value={callSettings.vishingGuard} />
-            <ToggleRow icon={Eye} title="Deepfake Scan" subtitle="Monitor video authenticity signals" settingKey="deepfakeScan" value={callSettings.deepfakeScan} />
+            <ToggleRow icon={ShieldAlert} title="Vishing Guard" subtitle="Browser speech recognition checks for warning signs" settingKey="vishingGuard" value={callSettings.vishingGuard} />
             <div className={cn(
               "p-4 rounded-2xl border flex items-center justify-between gap-4 transition-all",
               theme === 'glow' ? "bg-emerald-900/20 border-emerald-500/20" : "bg-zinc-50 border-zinc-100"
@@ -5615,23 +5844,19 @@ export default function App() {
                         <FileText className="w-5 h-5" />
                       </button>
                       <button 
-                        onClick={() => showComingSoonNotice('Video calls')}
-                        className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
+                        onClick={() => void startRealVideoCall()}
+                        disabled={selectedChat?.type !== 'direct' || activeVideoCall}
+                        className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500 disabled:opacity-40"
                         title="Video Call"
                       >
-                        <span className="absolute -top-2 -right-3 z-10">
-                          <ComingSoonBadge compact />
-                        </span>
                         <Video className="w-5 h-5" />
                       </button>
                       <button 
-                        onClick={() => showComingSoonNotice('Voice calls')}
-                        className="relative p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500"
+                        onClick={() => void startRealVoiceCall()}
+                        disabled={selectedChat?.type !== 'direct' || activeVideoCall}
+                        className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500 disabled:opacity-40"
                         title="Voice Call"
                       >
-                        <span className="absolute -top-2 -right-3 z-10">
-                          <ComingSoonBadge compact />
-                        </span>
                         <Phone className="w-5 h-5" />
                       </button>
                       {selectedChat.type === 'direct' && (
@@ -5690,13 +5915,13 @@ export default function App() {
                             <span>Download Chat Log</span>
                             <FileText className="h-4 w-4 text-zinc-400" />
                           </button>
-                          <button onClick={() => { setShowChatMenu(false); showComingSoonNotice('Video calls'); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                          <button disabled={selectedChat.type !== 'direct' || activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVideoCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
                             <span>Video Call</span>
-                            <span className="flex items-center gap-2"><ComingSoonBadge compact /><Video className="h-4 w-4 text-zinc-400" /></span>
+                            <Video className="h-4 w-4 text-zinc-400" />
                           </button>
-                          <button onClick={() => { setShowChatMenu(false); showComingSoonNotice('Voice calls'); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50">
+                          <button disabled={selectedChat.type !== 'direct' || activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVoiceCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
                             <span>Voice Call</span>
-                            <span className="flex items-center gap-2"><ComingSoonBadge compact /><Phone className="h-4 w-4 text-zinc-400" /></span>
+                            <Phone className="h-4 w-4 text-zinc-400" />
                           </button>
                           <div className="my-1 h-px bg-zinc-100" />
                         </div>
@@ -9134,43 +9359,25 @@ export default function App() {
                 id="remote-video"
                 autoPlay
                 playsInline
+                muted
                 onPlay={() => setHasRemoteVideo(true)}
                 onEmptied={() => setHasRemoteVideo(false)}
                 className="absolute inset-0 w-full h-full object-cover"
               />
+              <audio id="remote-audio" autoPlay />
               <div className={cn("absolute inset-0 flex items-center justify-center transition-opacity", hasRemoteVideo ? "opacity-0" : "opacity-100")}>
                 <div className="text-center pointer-events-none">
                   <div className="w-24 h-24 bg-zinc-800 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-zinc-700">
                     <UserIcon className="w-12 h-12 text-zinc-600" />
                   </div>
                   <h3 className="text-xl font-bold text-white mb-1">
-                    {selectedChat ? getChatDisplayName(selectedChat) : 'User'}
+                    {activeCallPeerName}
                   </h3>
-                  <p className="text-zinc-500 text-sm font-medium uppercase tracking-widest">Secure Video Call</p>
+                  <p className="text-zinc-500 text-sm font-medium uppercase tracking-widest">
+                    {callConnectionStatus === 'ringing' ? 'Calling…' : activeCallType === 'voice' ? 'Voice Call' : 'Video Call'}
+                  </p>
                 </div>
               </div>
-
-              {/* Deepfake Overlay Warning */}
-              {(deepfakeRisk || 0) > 80 && (
-                <div className="absolute inset-0 bg-red-950/80 flex items-center justify-center z-10 animate-in fade-in zoom-in duration-300 backdrop-blur-sm">
-                  <div className="text-center p-8 max-w-sm">
-                    <div className="w-24 h-24 bg-red-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_80px_rgba(220,38,38,0.8)] animate-pulse">
-                      <ShieldAlert className="w-12 h-12 text-white" />
-                    </div>
-                    <h2 className="text-3xl font-black text-red-500 tracking-widest uppercase mb-4 drop-shadow-xl bg-clip-text">Deepfake Detected</h2>
-                    <p className="text-white font-medium mb-8 leading-relaxed">
-                      Aegis biometric scan has identified synthetic facial manipulation and deepfake audio patterns. 
-                      <span className="block mt-2 text-red-400 font-bold">This is likely a scam. Disconnect immediately.</span>
-                    </p>
-                    <button 
-                      onClick={endVideoCall}
-                      className="w-full py-4 bg-red-600 text-white font-black rounded-2xl hover:bg-red-700 uppercase tracking-widest text-sm shadow-xl active:scale-95 transition-all outline-none"
-                    >
-                      End Call Now
-                    </button>
-                  </div>
-                </div>
-              )}
 
               {/* Local Video (Simulated -> Real) */}
               <div className="absolute bottom-6 right-6 w-48 aspect-video bg-zinc-800 rounded-2xl border-2 border-zinc-700 shadow-xl overflow-hidden">
@@ -9184,11 +9391,11 @@ export default function App() {
               </div>
 
               {/* AI Vishing Guard Overlay */}
-              <div className="absolute top-6 left-6 right-6 flex flex-col gap-4">
+              <div className="absolute top-6 left-6 right-6 flex flex-col gap-4 pointer-events-none">
                 <div className="flex items-center justify-between">
                   <div className="px-4 py-2 bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 rounded-full flex items-center gap-2">
                     <Shield className="w-4 h-4 text-emerald-500" />
-                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-widest">AI Vishing Guard Active</span>
+                    <span className="text-xs font-bold text-emerald-500 uppercase tracking-widest">{callGuardStatus}</span>
                   </div>
                   
                   {callSecurityStatus && !callSecurityStatus.isSafe && (
@@ -9204,8 +9411,8 @@ export default function App() {
                 </div>
 
                 {/* Real-time Transcript & Analysis */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl h-48 overflow-y-auto">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl h-48 overflow-y-auto pointer-events-auto">
                     <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Real-time Transcript</h4>
                     <div className="space-y-2">
                       {callTranscript.map((line, i) => (
@@ -9222,7 +9429,7 @@ export default function App() {
                   </div>
 
                   <div className={cn(
-                    "p-4 backdrop-blur-md border rounded-2xl h-48 overflow-y-auto transition-all duration-500 flex flex-col",
+                    "hidden",
                     (deepfakeRisk || 0) > 80 
                       ? "bg-red-500/20 border-red-500/40" 
                       : (deepfakeRisk || 0) > 40 ? "bg-yellow-500/20 border-yellow-500/40" : "bg-black/40 border-white/10"
@@ -9250,13 +9457,35 @@ export default function App() {
                     </div>
                   </div>
 
+                  {activeCallType === 'video' && (
+                    <div className={cn(
+                      "p-4 backdrop-blur-md border rounded-2xl h-48 overflow-y-auto pointer-events-auto",
+                      videoPatternStatus === 'warning' ? "bg-amber-500/20 border-amber-500/40" : "bg-black/40 border-white/10"
+                    )}>
+                      <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">Video pattern check · experimental</h4>
+                      <div className="flex items-center gap-2 mb-2">
+                        {videoPatternStatus === 'warning'
+                          ? <ShieldAlert className="w-4 h-4 text-amber-400" />
+                          : <ShieldCheck className="w-4 h-4 text-emerald-500" />}
+                        <span className={cn("text-xs font-bold", videoPatternStatus === 'warning' ? "text-amber-300" : "text-emerald-400")}>
+                          {videoPatternStatus === 'warning' ? 'Possible frozen or replayed video' : videoPatternStatus === 'monitoring' ? 'Checking video motion locally' : 'Waiting for remote video'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-white/70 leading-relaxed">
+                        {videoPatternStatus === 'warning'
+                          ? 'The video changed very little for about 10 seconds. This can also happen when someone is still or the connection is poor; it does not confirm a deepfake.'
+                          : 'This checks for very low frame-to-frame motion only. It cannot identify a person or reliably detect face swaps.'}
+                      </p>
+                    </div>
+                  )}
+
                   <div className={cn(
                     "p-4 backdrop-blur-md border rounded-2xl h-48 overflow-y-auto transition-all duration-500",
                     callSecurityStatus?.isSafe === false 
                       ? "bg-red-500/20 border-red-500/40" 
                       : "bg-black/40 border-white/10"
                   )}>
-                    <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">AI Security Analysis</h4>
+                    <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Local Vishing Check</h4>
                     {callSecurityStatus ? (
                       <div className="space-y-3">
                         <div className="flex items-center gap-2">
@@ -9269,7 +9498,7 @@ export default function App() {
                             "text-xs font-bold uppercase tracking-wider",
                             callSecurityStatus.isSafe ? "text-emerald-500" : "text-red-500"
                           )}>
-                            {callSecurityStatus.isSafe ? "No Threats Detected" : "Vishing Attempt Detected"}
+                            {callSecurityStatus.isSafe ? "No warning signs found" : "Possible vishing warning signs"}
                           </span>
                         </div>
                         <p className="text-[11px] text-white/70 leading-relaxed">
@@ -9277,7 +9506,7 @@ export default function App() {
                         </p>
                       </div>
                     ) : (
-                      <p className="text-[11px] text-zinc-500 italic">Analyzing audio stream for social engineering patterns...</p>
+                      <p className="text-[11px] text-zinc-500 italic">{callGuardStatus}. Browser speech recognition is required for live checks.</p>
                     )}
                   </div>
                 </div>
@@ -9295,7 +9524,7 @@ export default function App() {
                 >
                   {isMicOn ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
                 </button>
-                <button 
+                {activeCallType === 'video' && <button
                   onClick={toggleCamera}
                   className={cn(
                     "w-14 h-14 rounded-full flex items-center justify-center transition-all border",
@@ -9304,7 +9533,7 @@ export default function App() {
                   title={isCameraOn ? 'Turn camera off' : 'Turn camera on'}
                 >
                   {isCameraOn ? <Camera className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
-                </button>
+                </button>}
                 <button 
                   onClick={endVideoCall}
                   className="w-16 h-16 bg-red-600 text-white rounded-full flex items-center justify-center hover:bg-red-700 transition-all shadow-xl shadow-red-600/20"
