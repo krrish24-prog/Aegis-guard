@@ -71,7 +71,12 @@ export class WebRTCService {
     });
   }
 
-  async startLocalMedia(video: boolean, audio: boolean, settings: CallMediaSettings = {}): Promise<MediaStream> {
+  async startLocalMedia(
+    video: boolean,
+    audio: boolean,
+    settings: CallMediaSettings = {},
+    prepareVideoTransceiver = false
+  ): Promise<MediaStream> {
     const constraints: MediaStreamConstraints = {
       video: video ? this.buildVideoConstraints(settings) : false,
       audio: audio
@@ -79,6 +84,7 @@ export class WebRTCService {
             echoCancellation: settings.echoCancellation ?? true,
             noiseSuppression: settings.noiseSuppression ?? true,
             autoGainControl: settings.autoGainControl ?? true,
+            channelCount: 1,
           }
         : false,
     };
@@ -91,6 +97,10 @@ export class WebRTCService {
       this.peerConnection?.addTrack(track, this.localStream!);
     });
 
+    if (!video && prepareVideoTransceiver && this.peerConnection) {
+      this.peerConnection.addTransceiver('video', { direction: 'sendrecv' });
+    }
+
     return this.localStream;
   }
 
@@ -100,7 +110,8 @@ export class WebRTCService {
 
     if (!enabled) {
       for (const track of existingTracks) {
-        const sender = this.peerConnection?.getSenders().find((s) => s.track === track);
+        const sender = this.peerConnection?.getTransceivers().find((t) => t.receiver.track.kind === 'video')?.sender
+          || this.peerConnection?.getSenders().find((s) => s.track === track);
         if (sender) await sender.replaceTrack(null);
         track.stop();
         this.localStream.removeTrack(track);
@@ -117,12 +128,13 @@ export class WebRTCService {
     const videoTrack = videoStream.getVideoTracks()[0];
     if (!videoTrack) return this.localStream;
 
-    const sender = this.peerConnection?.getSenders().find((s) => s.track?.kind === 'video');
-    if (sender) {
-      await sender.replaceTrack(videoTrack);
-    } else {
-      this.peerConnection?.addTrack(videoTrack, this.localStream);
+    const sender = this.peerConnection?.getTransceivers().find((t) => t.receiver.track.kind === 'video')?.sender
+      || this.peerConnection?.getSenders().find((s) => s.track?.kind === 'video');
+    if (!sender) {
+      videoTrack.stop();
+      throw new Error('Video transceiver is unavailable; start a video call before enabling the camera.');
     }
+    await sender.replaceTrack(videoTrack);
     this.localStream.addTrack(videoTrack);
     return this.localStream;
   }

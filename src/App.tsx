@@ -2914,7 +2914,8 @@ export default function App() {
       const stream = await webrtcRef.current.startLocalMedia(
         wantsVideo && callSettings.startWithCamera,
         true,
-        callSettings
+        callSettings,
+        wantsVideo
       );
       webrtcRef.current.toggleAudio(callSettings.startWithMic);
       await WebRTCService.joinMeetingRoom(call.roomId, user.uid);
@@ -2992,7 +2993,8 @@ export default function App() {
       const stream = await webrtcRef.current.startLocalMedia(
         callSettings.startWithCamera,
         true,
-        callSettings
+        callSettings,
+        true
       );
       webrtcRef.current.toggleAudio(callSettings.startWithMic);
       const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'video');
