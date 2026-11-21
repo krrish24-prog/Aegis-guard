@@ -1383,6 +1383,15 @@ export default function App() {
     setIsMicOn(next);
   };
 
+  const enableRemoteSpeaker = async () => {
+    try {
+      await webrtcRef.current?.resumeRemoteAudio();
+    } catch (error) {
+      console.warn('Remote audio playback could not start:', error);
+      showToast('Could not start call audio. Check this device’s volume and try speaker again.');
+    }
+  };
+
   useEffect(() => {
     if (videoRef.current && localStream) {
       videoRef.current.srcObject = localStream;
@@ -9518,7 +9527,7 @@ export default function App() {
                 onEmptied={() => setHasRemoteVideo(false)}
                 className="absolute inset-0 h-full w-full object-cover"
               />
-              <audio id="remote-audio" autoPlay />
+              <audio id="remote-audio" autoPlay playsInline />
               <div className={cn("absolute inset-0 flex items-center justify-center transition-opacity", hasRemoteVideo ? "opacity-0" : "opacity-100")}>
                 <div className="text-center pointer-events-none">
                   <div className="w-24 h-24 bg-zinc-800 rounded-full flex items-center justify-center mx-auto mb-4 border-2 border-zinc-700">
@@ -9719,8 +9728,8 @@ export default function App() {
                 >
                   <XCircle className="w-8 h-8" />
                 </button>
-                <button className="w-14 h-14 bg-zinc-800 text-white rounded-full flex items-center justify-center hover:bg-zinc-700 transition-all border border-zinc-700">
-                  <ShieldCheck className="w-6 h-6" />
+                <button onClick={() => void enableRemoteSpeaker()} title="Enable speaker audio" aria-label="Enable speaker audio" className="w-14 h-14 bg-zinc-800 text-white rounded-full flex items-center justify-center hover:bg-zinc-700 transition-all border border-zinc-700">
+                  <Volume2 className="w-6 h-6" />
                 </button>
               </div>
             </div>

@@ -58,7 +58,10 @@ export class WebRTCService {
       if (event.track.kind === 'audio') {
         this.remoteAudioStream = remoteStream;
         const remoteAudio = document.getElementById('remote-audio') as HTMLAudioElement | null;
-        if (remoteAudio) remoteAudio.srcObject = remoteStream;
+        if (remoteAudio) {
+          remoteAudio.srcObject = remoteStream;
+          void remoteAudio.play().catch(() => undefined);
+        }
       } else {
         this.remoteVideoStream = remoteStream;
         const remoteVideo = document.getElementById('remote-video') as HTMLVideoElement | null;
@@ -72,6 +75,17 @@ export class WebRTCService {
 
   getRemoteStreams(): { audio: MediaStream | null; video: MediaStream | null } {
     return { audio: this.remoteAudioStream, video: this.remoteVideoStream };
+  }
+
+  async resumeRemoteAudio(): Promise<void> {
+    const remoteAudio = document.getElementById('remote-audio') as HTMLAudioElement | null;
+    if (!remoteAudio) throw new Error('Call audio output is unavailable.');
+    if (this.remoteAudioStream && remoteAudio.srcObject !== this.remoteAudioStream) {
+      remoteAudio.srcObject = this.remoteAudioStream;
+    }
+    remoteAudio.muted = false;
+    remoteAudio.volume = 1;
+    await remoteAudio.play();
   }
 
   async publishLocalDescription(type: 'offer' | 'answer', description: RTCSessionDescriptionInit): Promise<void> {
@@ -103,7 +117,12 @@ export class WebRTCService {
     const localVideo = document.getElementById('local-video') as HTMLVideoElement;
     if (localVideo) localVideo.srcObject = this.localStream;
 
-    this.localStream.getTracks().forEach((track) => {
+    // Add audio before video on both peers so each side builds matching SDP
+    // media sections, regardless of the order returned by getUserMedia().
+    this.localStream.getAudioTracks().forEach((track) => {
+      this.peerConnection?.addTrack(track, this.localStream!);
+    });
+    this.localStream.getVideoTracks().forEach((track) => {
       this.peerConnection?.addTrack(track, this.localStream!);
     });
 
