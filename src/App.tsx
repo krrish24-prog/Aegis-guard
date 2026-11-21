@@ -2924,14 +2924,21 @@ export default function App() {
   };
 
   const startRealVideoCall = async () => {
-    if (!user || !selectedChatId) return;
+    if (activeVideoCall) {
+      showToast('End the current call before starting another one');
+      return;
+    }
+    if (!user || !selectedChatId) {
+      showToast('Open a contact chat before starting a call');
+      return;
+    }
     let roomId: string | null = null;
     let sessionId: string | null = null;
     try {
       const chat = chats.find((c) => c.id === selectedChatId);
       const targetId = getDirectCallTargetId(chat);
-      if (!chat || !targetId) {
-        showToast('Select a contact chat to start a call');
+      if (!chat || chat.type !== 'direct' || !targetId) {
+        showToast('Voice and video calls are available in one-to-one contact chats');
         return;
       }
       const calleeId = await resolveCallTargetUid(targetId);
@@ -2990,14 +2997,21 @@ export default function App() {
   };
 
   const startRealVoiceCall = async () => {
-    if (!user || !selectedChatId) return;
+    if (activeVideoCall) {
+      showToast('End the current call before starting another one');
+      return;
+    }
+    if (!user || !selectedChatId) {
+      showToast('Open a contact chat before starting a call');
+      return;
+    }
     let roomId: string | null = null;
     let sessionId: string | null = null;
     try {
       const chat = chats.find((c) => c.id === selectedChatId);
       const targetId = getDirectCallTargetId(chat);
-      if (!chat || !targetId) {
-        showToast('Select a contact chat to start a call');
+      if (!chat || chat.type !== 'direct' || !targetId) {
+        showToast('Voice and video calls are available in one-to-one contact chats');
         return;
       }
       const calleeId = await resolveCallTargetUid(targetId);
@@ -5845,7 +5859,7 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => void startRealVideoCall()}
-                        disabled={selectedChat?.type !== 'direct' || activeVideoCall}
+                        disabled={activeVideoCall}
                         className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500 disabled:opacity-40"
                         title="Video Call"
                       >
@@ -5853,7 +5867,7 @@ export default function App() {
                       </button>
                       <button 
                         onClick={() => void startRealVoiceCall()}
-                        disabled={selectedChat?.type !== 'direct' || activeVideoCall}
+                        disabled={activeVideoCall}
                         className="p-2 hover:bg-zinc-100 rounded-lg transition-colors text-zinc-500 disabled:opacity-40"
                         title="Voice Call"
                       >
@@ -5915,11 +5929,11 @@ export default function App() {
                             <span>Download Chat Log</span>
                             <FileText className="h-4 w-4 text-zinc-400" />
                           </button>
-                          <button disabled={selectedChat.type !== 'direct' || activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVideoCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
+                          <button disabled={activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVideoCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
                             <span>Video Call</span>
                             <Video className="h-4 w-4 text-zinc-400" />
                           </button>
-                          <button disabled={selectedChat.type !== 'direct' || activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVoiceCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
+                          <button disabled={activeVideoCall} onClick={() => { setShowChatMenu(false); void startRealVoiceCall(); }} className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-xs font-bold text-zinc-700 hover:bg-zinc-50 disabled:opacity-40">
                             <span>Voice Call</span>
                             <Phone className="h-4 w-4 text-zinc-400" />
                           </button>
