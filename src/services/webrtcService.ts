@@ -24,6 +24,8 @@ export class WebRTCService {
   private roomId: string | null = null;
   private userId: string | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
+  private remoteVideoStream: MediaStream | null = null;
+  private remoteAudioStream: MediaStream | null = null;
 
   static getIceServers(): RTCIceServer[] {
     return ICE_SERVERS;
@@ -52,16 +54,24 @@ export class WebRTCService {
     };
 
     this.peerConnection.ontrack = (event) => {
-      const remoteStream = event.streams[0];
-      if (!remoteStream) return;
+      const remoteStream = event.streams[0] || new MediaStream([event.track]);
       if (event.track.kind === 'audio') {
+        this.remoteAudioStream = remoteStream;
         const remoteAudio = document.getElementById('remote-audio') as HTMLAudioElement | null;
         if (remoteAudio) remoteAudio.srcObject = remoteStream;
       } else {
+        this.remoteVideoStream = remoteStream;
         const remoteVideo = document.getElementById('remote-video') as HTMLVideoElement | null;
-        if (remoteVideo) remoteVideo.srcObject = remoteStream;
+        if (remoteVideo) {
+          remoteVideo.srcObject = remoteStream;
+          void remoteVideo.play().catch(() => undefined);
+        }
       }
     };
+  }
+
+  getRemoteStreams(): { audio: MediaStream | null; video: MediaStream | null } {
+    return { audio: this.remoteAudioStream, video: this.remoteVideoStream };
   }
 
   async publishLocalDescription(type: 'offer' | 'answer', description: RTCSessionDescriptionInit): Promise<void> {
@@ -200,6 +210,8 @@ export class WebRTCService {
     this.peerConnection = null;
     this.localStream = null;
     this.pendingCandidates = [];
+    this.remoteVideoStream = null;
+    this.remoteAudioStream = null;
   }
 
   async endCall(): Promise<void> {

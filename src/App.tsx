@@ -1348,6 +1348,25 @@ export default function App() {
       videoRef.current.srcObject = localStream;
     }
   }, [isCameraOn, localStream]);
+
+  useEffect(() => {
+    if (!activeVideoCall) return;
+    const attachRemoteMedia = () => {
+      const streams = webrtcRef.current?.getRemoteStreams();
+      const remoteVideo = document.getElementById('remote-video') as HTMLVideoElement | null;
+      const remoteAudio = document.getElementById('remote-audio') as HTMLAudioElement | null;
+      if (remoteVideo && streams?.video && remoteVideo.srcObject !== streams.video) {
+        remoteVideo.srcObject = streams.video;
+        void remoteVideo.play().catch(() => undefined);
+      }
+      if (remoteAudio && streams?.audio && remoteAudio.srcObject !== streams.audio) {
+        remoteAudio.srcObject = streams.audio;
+        void remoteAudio.play().catch(() => undefined);
+      }
+    };
+    const frame = window.requestAnimationFrame(attachRemoteMedia);
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeVideoCall]);
   const [isCalling, setIsCalling] = useState<boolean>(false);
   const [callTranscript, setCallTranscript] = useState<string[]>([]);
   const callTranscriptRef = useRef<string[]>([]);
@@ -9429,18 +9448,19 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] overflow-y-auto bg-zinc-950 p-3 sm:p-5"
+            className="fixed inset-0 z-[100] overflow-y-auto bg-zinc-950"
           >
-            <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 pb-4">
-            <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 shadow-2xl sm:rounded-3xl">
+            <div className="relative flex min-h-full w-full flex-col pb-28">
+            <div className="relative h-[100dvh] min-h-[420px] w-full overflow-hidden bg-zinc-900 shadow-2xl">
               <video
                 id="remote-video"
                 autoPlay
                 playsInline
                 muted
+                onLoadedMetadata={() => setHasRemoteVideo(true)}
                 onPlay={() => setHasRemoteVideo(true)}
                 onEmptied={() => setHasRemoteVideo(false)}
-                className="absolute inset-0 w-full h-full object-cover"
+                className="absolute inset-0 h-full w-full object-cover"
               />
               <audio id="remote-audio" autoPlay />
               <div className={cn("absolute inset-0 flex items-center justify-center transition-opacity", hasRemoteVideo ? "opacity-0" : "opacity-100")}>
@@ -9457,20 +9477,26 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Local Video (Simulated -> Real) */}
-              <div className="absolute bottom-6 right-6 w-48 aspect-video bg-zinc-800 rounded-2xl border-2 border-zinc-700 shadow-xl overflow-hidden">
+              <div className="absolute left-4 top-4 z-20 rounded-full bg-black/55 px-3 py-2 text-xs font-bold text-white backdrop-blur sm:left-6 sm:top-6">
+                {activeCallPeerName} · {callConnectionStatus === 'ringing' ? 'Calling' : activeCallType === 'voice' ? 'Voice call' : 'Video call'}
+              </div>
+
+              {/* Self-view sits above the remote video, as a compact call preview. */}
+              {activeCallType === 'video' && <div className="absolute right-4 top-16 z-20 aspect-[3/4] w-28 overflow-hidden rounded-2xl border-2 border-white/80 bg-zinc-800 shadow-2xl sm:right-6 sm:top-20 sm:w-48">
                 {isCameraOn ? (
-                  <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                  <video ref={videoRef} autoPlay playsInline muted style={{ transform: 'scaleX(-1)' }} className="w-full h-full object-cover" />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <UserIcon className="w-8 h-8 text-zinc-600" />
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-zinc-800 text-zinc-300">
+                    <UserIcon className="h-8 w-8 text-zinc-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest">Camera off</span>
                   </div>
                 )}
-              </div>
+                <span className="absolute bottom-1.5 left-1.5 rounded-md bg-black/60 px-2 py-1 text-[10px] font-bold text-white">You</span>
+              </div>}
             </div>
 
               {/* AI Vishing Guard Overlay */}
-              <div className="relative w-full rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 sm:p-4">
+              <div className="mx-auto mt-4 w-full max-w-5xl rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 sm:p-4">
                 <div className="flex items-center justify-between">
                   <div className="px-4 py-2 bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 rounded-full flex items-center gap-2">
                     <Shield className="w-4 h-4 text-emerald-500" />
@@ -9592,7 +9618,7 @@ export default function App() {
               </div>
 
               {/* Call Controls */}
-              <div className="flex w-full flex-wrap items-center justify-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3">
+              <div className="fixed bottom-4 left-1/2 z-[110] flex -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-full border border-white/10 bg-zinc-900/90 px-4 py-3 shadow-2xl backdrop-blur sm:bottom-6 sm:gap-4 sm:px-6">
                 <button 
                   onClick={toggleMic}
                   className={cn(
