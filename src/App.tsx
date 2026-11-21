@@ -1728,6 +1728,7 @@ export default function App() {
   const [activeCallSessionId, setActiveCallSessionId] = useState<string | null>(null);
   const [incomingCall, setIncomingCall] = useState<CallSession | null>(null);
   const [incomingCallerName, setIncomingCallerName] = useState('');
+  const [callHistory, setCallHistory] = useState<CallSession[]>([]);
   const webrtcRef = useRef<WebRTCService | null>(null);
   const callSignalingUnsubscribeRef = useRef<(() => void) | null>(null);
   const callSessionUnsubscribeRef = useRef<(() => void) | null>(null);
@@ -2206,6 +2207,46 @@ export default function App() {
       if (callSessionUnsubscribeRef.current === unsubscribe) callSessionUnsubscribeRef.current = null;
     };
   }, [activeCallSessionId]);
+
+  useEffect(() => {
+    if (!user) {
+      setCallHistory([]);
+      return;
+    }
+    let outgoing: CallSession[] = [];
+    let incoming: CallSession[] = [];
+    const publishHistory = () => {
+      const uniqueCalls = new Map<string, CallSession>();
+      [...outgoing, ...incoming].forEach(call => uniqueCalls.set(call.id, call));
+      setCallHistory(Array.from(uniqueCalls.values()).sort((a, b) =>
+        (b.startedAt?.toMillis?.() || 0) - (a.startedAt?.toMillis?.() || 0)
+      ));
+    };
+    const outgoingQuery = query(
+      collection(db, 'call_sessions'),
+      where('callerId', '==', user.uid),
+      orderBy('startedAt', 'desc'),
+      limit(100),
+    );
+    const incomingHistoryQuery = query(
+      collection(db, 'call_sessions'),
+      where('calleeId', '==', user.uid),
+      orderBy('startedAt', 'desc'),
+      limit(100),
+    );
+    const stopOutgoing = onSnapshot(outgoingQuery, snapshot => {
+      outgoing = snapshot.docs.map(callDoc => ({ id: callDoc.id, ...callDoc.data() } as CallSession));
+      publishHistory();
+    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
+    const stopIncoming = onSnapshot(incomingHistoryQuery, snapshot => {
+      incoming = snapshot.docs.map(callDoc => ({ id: callDoc.id, ...callDoc.data() } as CallSession));
+      publishHistory();
+    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
+    return () => {
+      stopOutgoing();
+      stopIncoming();
+    };
+  }, [user]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -6938,8 +6979,18 @@ export default function App() {
         
         {syncedContacts.length > 0 ? (
           <div className="space-y-4">
-            {syncedContacts.map(contact => (
-              <div key={contact.uid || Math.random().toString()} className="flex items-center gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100 cursor-pointer hover:border-emerald-500/30 transition-all"
+            {syncedContacts.map(contact => {
+              const contactIdentifiers = new Set(
+                [contact.uid, contact.email, contact.phoneNumber, contact.displayName]
+                  .filter(Boolean)
+                  .map(identifier => identifier!.toLowerCase())
+              );
+              const contactCalls = callHistory.filter(call => {
+                const peerId = (call.callerId === user?.uid ? call.calleeId : call.callerId).toLowerCase();
+                return contactIdentifiers.has(peerId);
+              }).slice(0, 3);
+              return (
+              <div key={contact.uid || contact.email || contact.displayName} className="flex items-center gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100 cursor-pointer hover:border-emerald-500/30 transition-all"
                 onClick={() => {
                   startNewChat(contact);
                   setActiveSection('chats');
@@ -6957,6 +7008,15 @@ export default function App() {
                   {(contact.phoneNumber || contact.email) && (
                     <p className="text-sm text-zinc-500 truncate">{contact.phoneNumber || contact.email}</p>
                   )}
+                  <div className="mt-2 space-y-1">
+                    {contactCalls.length ? contactCalls.map(call => (
+                      <p key={call.id} className="flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
+                        {call.type === 'video' ? <Video className="h-3.5 w-3.5 text-zinc-400" /> : <Phone className="h-3.5 w-3.5 text-zinc-400" />}
+                        <span>{call.type === 'video' ? 'Video call' : 'Voice call'} · {call.status === 'missed' ? 'Missed' : call.status === 'ringing' ? 'No answer' : 'Completed'}</span>
+                        <time>{call.startedAt?.toDate ? format(call.startedAt.toDate(), 'MMM d, yyyy, h:mm a') : 'Time unavailable'}</time>
+                      </p>
+                    )) : <p className="mt-1 text-[11px] text-zinc-400">No call history</p>}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="w-10 h-10 rounded-full bg-white border border-zinc-200 flex items-center justify-center text-zinc-400 hover:text-emerald-600 hover:border-emerald-200 hover:bg-emerald-50 transition-all shadow-sm">
@@ -6991,7 +7051,8 @@ export default function App() {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
         <div className="text-sm text-zinc-500">
@@ -9366,9 +9427,10 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] bg-zinc-950 flex flex-col items-center justify-center p-6"
+            className="fixed inset-0 z-[100] overflow-y-auto bg-zinc-950 p-3 sm:p-5"
           >
-            <div className="w-full max-w-4xl aspect-video bg-zinc-900 rounded-3xl overflow-hidden relative shadow-2xl border border-zinc-800">
+            <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 pb-4">
+            <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 shadow-2xl sm:rounded-3xl">
               <video
                 id="remote-video"
                 autoPlay
@@ -9403,9 +9465,10 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
 
               {/* AI Vishing Guard Overlay */}
-              <div className="absolute top-6 left-6 right-6 flex flex-col gap-4 pointer-events-none">
+              <div className="relative w-full rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3 sm:p-4">
                 <div className="flex items-center justify-between">
                   <div className="px-4 py-2 bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 rounded-full flex items-center gap-2">
                     <Shield className="w-4 h-4 text-emerald-500" />
@@ -9425,8 +9488,8 @@ export default function App() {
                 </div>
 
                 {/* Real-time Transcript & Analysis */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl h-48 overflow-y-auto pointer-events-auto">
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="p-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl h-36 overflow-y-auto">
                     <h4 className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-3">Real-time Transcript</h4>
                     <div className="space-y-2">
                       {callTranscript.map((line, i) => (
@@ -9473,7 +9536,7 @@ export default function App() {
 
                   {activeCallType === 'video' && (
                     <div className={cn(
-                      "p-4 backdrop-blur-md border rounded-2xl h-48 overflow-y-auto pointer-events-auto",
+                      "p-3 backdrop-blur-md border rounded-2xl h-36 overflow-y-auto",
                       videoPatternStatus === 'warning' ? "bg-amber-500/20 border-amber-500/40" : "bg-black/40 border-white/10"
                     )}>
                       <h4 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest mb-3">Video pattern check · experimental</h4>
@@ -9494,7 +9557,7 @@ export default function App() {
                   )}
 
                   <div className={cn(
-                    "p-4 backdrop-blur-md border rounded-2xl h-48 overflow-y-auto transition-all duration-500",
+                    "p-3 backdrop-blur-md border rounded-2xl h-36 overflow-y-auto transition-all duration-500",
                     callSecurityStatus?.isSafe === false 
                       ? "bg-red-500/20 border-red-500/40" 
                       : "bg-black/40 border-white/10"
@@ -9527,7 +9590,7 @@ export default function App() {
               </div>
 
               {/* Call Controls */}
-              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-6">
+              <div className="flex w-full flex-wrap items-center justify-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3">
                 <button 
                   onClick={toggleMic}
                   className={cn(
