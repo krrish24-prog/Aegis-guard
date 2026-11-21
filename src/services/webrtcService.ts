@@ -117,12 +117,7 @@ export class WebRTCService {
     const localVideo = document.getElementById('local-video') as HTMLVideoElement;
     if (localVideo) localVideo.srcObject = this.localStream;
 
-    // Add audio before video on both peers so each side builds matching SDP
-    // media sections, regardless of the order returned by getUserMedia().
-    this.localStream.getAudioTracks().forEach((track) => {
-      this.peerConnection?.addTrack(track, this.localStream!);
-    });
-    this.localStream.getVideoTracks().forEach((track) => {
+    this.localStream.getTracks().forEach((track) => {
       this.peerConnection?.addTrack(track, this.localStream!);
     });
 
