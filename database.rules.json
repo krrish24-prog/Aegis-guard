@@ -1,0 +1,34 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "callSessions": {
+      ".indexOn": ["callerId", "calleeId"],
+      ".read": "auth != null && ((query.orderByChild == 'callerId' && query.equalTo == auth.uid) || (query.orderByChild == 'calleeId' && query.equalTo == auth.uid))",
+      "$callId": {
+        ".read": "auth != null && (data.child('callerId').val() == auth.uid || data.child('calleeId').val() == auth.uid)",
+        ".write": "auth != null && ((!data.exists() && newData.child('callerId').val() == auth.uid) || data.child('callerId').val() == auth.uid || data.child('calleeId').val() == auth.uid)"
+      }
+    },
+    "callRooms": {
+      "$roomId": {
+        ".read": "auth != null && data.child('participants').child(auth.uid).val() == true",
+        ".write": "auth != null && !data.exists() && newData.child('hostId').val() == auth.uid",
+        "status": {
+          ".write": "auth != null && root.child('callRooms').child($roomId).child('participants').child(auth.uid).val() == true"
+        },
+        "endedAt": {
+          ".write": "auth != null && root.child('callRooms').child($roomId).child('participants').child(auth.uid).val() == true"
+        },
+        "screenSharing": {
+          ".write": "auth != null && root.child('callRooms').child($roomId).child('participants').child(auth.uid).val() == true"
+        },
+        "signaling": {
+          "$userId": {
+            ".write": "auth != null && auth.uid == $userId && root.child('callRooms').child($roomId).child('participants').child(auth.uid).val() == true"
+          }
+        }
+      }
+    }
+  }
+}

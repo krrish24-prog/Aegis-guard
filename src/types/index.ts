@@ -167,8 +167,8 @@ export interface MeetingRoom {
   status: 'waiting' | 'active' | 'ended';
   signaling?: Record<string, unknown>;
   screenSharing?: boolean;
-  createdAt: Timestamp;
-  endedAt?: Timestamp;
+  createdAt: Timestamp | number;
+  endedAt?: Timestamp | number;
 }
 
 export interface CallSession {
@@ -176,12 +176,14 @@ export interface CallSession {
   roomId: string;
   callerId: string;
   calleeId: string;
+  callerDisplayName?: string;
   type: CallType;
   status: 'ringing' | 'connected' | 'ended' | 'missed';
-  startedAt: Timestamp;
-  endedAt?: Timestamp;
+  startedAt: Timestamp | number;
+  endedAt?: Timestamp | number;
   duration?: number;
   securityAnalysis?: SecurityAnalysis;
+  transcriptEntries?: unknown[];
 }
 
 // ─── Admin ──────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   auth, 
   db, 
+  rtdb,
   OperationType, 
   handleFirestoreError,
   describeFirestoreError
@@ -43,6 +44,7 @@ import {
   arrayUnion,
   arrayRemove
 } from 'firebase/firestore';
+import { ref as realtimeRef, update as updateRealtime } from 'firebase/database';
 import { 
   Mail,
   Bookmark,
@@ -129,6 +131,14 @@ import { decryptMessageMedia, buildFileDataInfo, isUsableFilePayload, resolveMes
 import { analyzeDecryptedMessage } from './services/messageAnalysisService';
 import { MessageEnhancementsService } from './services/messageEnhancementsService';
 import { WebRTCService } from './services/webrtcService';
+import {
+  appendCallTranscriptEntries,
+  getCallSession,
+  subscribeCallHistory,
+  subscribeCallSession,
+  subscribeIncomingCallSessions,
+  updateCallSession,
+} from './services/callSessionService';
 import { VoiceMessageService } from './services/voiceMessageService';
 import { AdminService } from './services/adminService';
 import { authenticatedFetch } from './services/apiClient';
@@ -1250,9 +1260,8 @@ export default function App() {
         showToast('Vishing warning: pause and independently verify this caller');
       }
       if (activeCallSessionId && entries.length) {
-        void updateDoc(doc(db, 'call_sessions', activeCallSessionId), {
-          transcriptEntries: arrayUnion(...entries),
-        }).catch(error => console.warn('Could not share live call transcript:', error));
+        void appendCallTranscriptEntries(activeCallSessionId, entries)
+          .catch(error => console.warn('Could not share live call transcript:', error));
       }
     };
     recognition.onerror = (event: any) => {
@@ -2221,34 +2230,28 @@ export default function App() {
       return;
     }
     let currentIncomingId = '';
-    const incomingQuery = query(
-      collection(db, 'call_sessions'),
-      where('calleeId', '==', user.uid),
-      where('status', '==', 'ringing'),
-      orderBy('startedAt', 'desc'),
-      limit(1),
-    );
-    const unsubscribe = onSnapshot(incomingQuery, snapshot => {
-      const callDoc = snapshot.docs[0];
-      if (!callDoc) {
+    const unsubscribe = subscribeIncomingCallSessions(user.uid, calls => {
+      const ringingCalls = calls
+        .filter(call => call.status === 'ringing')
+        .sort((a, b) => Number(b.startedAt) - Number(a.startedAt));
+      const call = ringingCalls[0];
+      if (!call) {
         currentIncomingId = '';
         setIncomingCall(null);
         setIncomingCallerName('');
         return;
       }
-      const call = { id: callDoc.id, ...callDoc.data() } as CallSession;
-      if (call.startedAt?.toMillis && Date.now() - call.startedAt.toMillis() > 60_000) {
-        void updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(console.error);
+      if (Date.now() - Number(call.startedAt) > 60_000) {
+        void updateCallSession(call.id, { status: 'missed', endedAt: Date.now(), transcriptEntries: null }).catch(console.error);
         return;
       }
       currentIncomingId = call.id;
       setIncomingCall(call);
-      void getDoc(doc(db, 'users_public', call.callerId)).then(caller => {
-        if (currentIncomingId === call.id) {
-          setIncomingCallerName(caller.exists() ? String(caller.data().displayName || 'Contact') : 'Contact');
-        }
-      }).catch(() => setIncomingCallerName('Contact'));
-    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
+      setIncomingCallerName(call.callerDisplayName || 'Contact');
+    }, error => {
+      console.error('Incoming call listener failed:', error);
+      showToast('Could not receive calls from Realtime Database. Check the deployed database rules.');
+    });
     return () => {
       currentIncomingId = '';
       unsubscribe();
@@ -2257,9 +2260,8 @@ export default function App() {
 
   useEffect(() => {
     if (!activeCallSessionId) return;
-    const unsubscribe = onSnapshot(doc(db, 'call_sessions', activeCallSessionId), snapshot => {
-      if (!snapshot.exists()) return;
-      const callData = snapshot.data();
+    const unsubscribe = subscribeCallSession(activeCallSessionId, callData => {
+      if (!callData) return;
       const transcriptEntries = Array.isArray(callData.transcriptEntries)
         ? (callData.transcriptEntries as CallTranscriptEntry[]).slice(-40)
         : [];
@@ -2282,7 +2284,10 @@ export default function App() {
         showToast(status === 'missed' ? 'Call was not answered' : 'The other person ended the call');
         void endVideoCall(false);
       }
-    }, error => console.error('Call status listener failed:', error));
+    }, error => {
+      console.error('Call status listener failed:', error);
+      showToast('Call status connection was interrupted. Check Realtime Database access.');
+    });
     callSessionUnsubscribeRef.current = unsubscribe;
     return () => {
       unsubscribe();
@@ -2295,39 +2300,7 @@ export default function App() {
       setCallHistory([]);
       return;
     }
-    let outgoing: CallSession[] = [];
-    let incoming: CallSession[] = [];
-    const publishHistory = () => {
-      const uniqueCalls = new Map<string, CallSession>();
-      [...outgoing, ...incoming].forEach(call => uniqueCalls.set(call.id, call));
-      setCallHistory(Array.from(uniqueCalls.values()).sort((a, b) =>
-        (b.startedAt?.toMillis?.() || 0) - (a.startedAt?.toMillis?.() || 0)
-      ));
-    };
-    const outgoingQuery = query(
-      collection(db, 'call_sessions'),
-      where('callerId', '==', user.uid),
-      orderBy('startedAt', 'desc'),
-      limit(100),
-    );
-    const incomingHistoryQuery = query(
-      collection(db, 'call_sessions'),
-      where('calleeId', '==', user.uid),
-      orderBy('startedAt', 'desc'),
-      limit(100),
-    );
-    const stopOutgoing = onSnapshot(outgoingQuery, snapshot => {
-      outgoing = snapshot.docs.map(callDoc => ({ id: callDoc.id, ...callDoc.data() } as CallSession));
-      publishHistory();
-    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
-    const stopIncoming = onSnapshot(incomingHistoryQuery, snapshot => {
-      incoming = snapshot.docs.map(callDoc => ({ id: callDoc.id, ...callDoc.data() } as CallSession));
-      publishHistory();
-    }, error => handleFirestoreError(error, OperationType.LIST, 'call_sessions'));
-    return () => {
-      stopOutgoing();
-      stopIncoming();
-    };
+    return subscribeCallHistory(user.uid, setCallHistory, error => console.error('Call history listener failed:', error));
   }, [user]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2935,8 +2908,10 @@ export default function App() {
 
   const resolveCallTargetUid = async (identifier: string) => {
     if (!identifier.includes('@')) return identifier;
-    const snap = await getDocs(query(collection(db, 'users_public'), where('email', '==', identifier.toLowerCase()), limit(1)));
-    return snap.empty ? identifier : (snap.docs[0].data() as UserProfile).uid;
+    const email = identifier.trim().toLowerCase();
+    const cachedContact = [...allUsers, ...syncedContacts].find(candidate => candidate.email?.trim().toLowerCase() === email);
+    if (cachedContact?.uid && !cachedContact.uid.includes('@')) return cachedContact.uid;
+    throw new Error('Could not resolve this contact to an account. Refresh your contacts and try again.');
   };
 
   const attachCallerSignaling = (roomId: string, calleeId: string) => {
@@ -2953,13 +2928,18 @@ export default function App() {
       }
       const candidates: RTCIceCandidateInit[] = Array.isArray(calleeSignal.iceCandidates)
         ? calleeSignal.iceCandidates
-        : calleeSignal.iceCandidate ? [calleeSignal.iceCandidate] : [];
+        : calleeSignal.iceCandidates && typeof calleeSignal.iceCandidates === 'object'
+          ? Object.values(calleeSignal.iceCandidates)
+          : calleeSignal.iceCandidate ? [calleeSignal.iceCandidate] : [];
       for (const candidate of candidates) {
         const candidateKey = JSON.stringify(candidate);
         if (addedCandidates.has(candidateKey)) continue;
         addedCandidates.add(candidateKey);
         await webrtcRef.current?.addIceCandidate(candidate).catch(console.error);
       }
+    }, error => {
+      console.error('Caller signaling listener failed:', error);
+      showToast('Could not receive the call answer or connection data. Check the database rules.');
     });
   };
 
@@ -2970,18 +2950,29 @@ export default function App() {
       const callerSignal = (signaling?.[callerId] || {}) as any;
       if (callerSignal.offer && !handledOffer && webrtcRef.current && user) {
         handledOffer = true;
-        const answer = await webrtcRef.current.handleOffer(callerSignal.offer);
-        await webrtcRef.current.publishLocalDescription('answer', answer);
+        try {
+          const answer = await webrtcRef.current.handleOffer(callerSignal.offer);
+          await webrtcRef.current.publishLocalDescription('answer', answer);
+        } catch (error) {
+          handledOffer = false;
+          console.error('Could not accept WebRTC offer:', error);
+          showToast('Could not establish the call connection. Check the devices and database access.');
+        }
       }
       const candidates: RTCIceCandidateInit[] = Array.isArray(callerSignal.iceCandidates)
         ? callerSignal.iceCandidates
-        : callerSignal.iceCandidate ? [callerSignal.iceCandidate] : [];
+        : callerSignal.iceCandidates && typeof callerSignal.iceCandidates === 'object'
+          ? Object.values(callerSignal.iceCandidates)
+          : callerSignal.iceCandidate ? [callerSignal.iceCandidate] : [];
       for (const candidate of candidates) {
         const candidateKey = JSON.stringify(candidate);
         if (addedCandidates.has(candidateKey)) continue;
         addedCandidates.add(candidateKey);
         await webrtcRef.current?.addIceCandidate(candidate).catch(console.error);
       }
+    }, error => {
+      console.error('Receiver signaling listener failed:', error);
+      showToast('Could not receive the call offer or connection data. Check the database rules.');
     });
   };
 
@@ -3001,7 +2992,7 @@ export default function App() {
       );
       webrtcRef.current.toggleAudio(callSettings.startWithMic);
       await WebRTCService.joinMeetingRoom(call.roomId, user.uid);
-      await updateDoc(doc(db, 'call_sessions', call.id), { status: 'connected' });
+      await updateCallSession(call.id, { status: 'connected' });
       setActiveCallSessionId(call.id);
       setActiveMeetingRoom(call.roomId);
       setActiveCallType(wantsVideo ? 'video' : 'voice');
@@ -3025,15 +3016,12 @@ export default function App() {
       console.error('Accept call failed:', err);
       webrtcRef.current?.dispose();
       webrtcRef.current = null;
-      await updateDoc(doc(db, 'call_sessions', call.id), {
+      await updateCallSession(call.id, {
         status: 'missed',
-        endedAt: serverTimestamp(),
-        transcriptEntries: deleteField(),
+        endedAt: Date.now(),
+        transcriptEntries: null,
       }).catch(() => undefined);
-      await updateDoc(doc(db, 'meeting_rooms', call.roomId), {
-        status: 'ended',
-        endedAt: serverTimestamp(),
-      }).catch(() => undefined);
+      if (rtdb) await updateRealtime(realtimeRef(rtdb, `callRooms/${call.roomId}`), { status: 'ended', endedAt: Date.now() }).catch(() => undefined);
       setIncomingCall(null);
       setIncomingCallerName('');
       showToast('Could not answer call');
@@ -3042,8 +3030,8 @@ export default function App() {
 
   const declineIncomingCall = async () => {
     if (!incomingCall) return;
-    await updateDoc(doc(db, 'meeting_rooms', incomingCall.roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(console.error);
-    await updateDoc(doc(db, 'call_sessions', incomingCall.id), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(console.error);
+    if (rtdb) await updateRealtime(realtimeRef(rtdb, `callRooms/${incomingCall.roomId}`), { status: 'ended', endedAt: Date.now() }).catch(console.error);
+    await updateCallSession(incomingCall.id, { status: 'missed', endedAt: Date.now(), transcriptEntries: null }).catch(console.error);
     setIncomingCall(null);
     setIncomingCallerName('');
   };
@@ -3080,7 +3068,7 @@ export default function App() {
         true
       );
       webrtcRef.current.toggleAudio(callSettings.startWithMic);
-      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'video');
+      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'video', profile?.displayName || 'Contact');
       sessionId = session.id;
       setActiveCallSessionId(session.id);
       setActiveCallType('video');
@@ -3100,17 +3088,17 @@ export default function App() {
       callSignalingUnsubscribeRef.current?.();
       callSignalingUnsubscribeRef.current = attachCallerSignaling(room.id, calleeId);
       callTimeoutRef.current = window.setTimeout(() => {
-        void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
-          if (callDoc.exists() && callDoc.data().status === 'ringing') {
-            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() });
+        void getCallSession(session.id).then(callData => {
+          if (callData?.status === 'ringing') {
+            return updateCallSession(session.id, { status: 'missed', endedAt: Date.now(), transcriptEntries: null });
           }
         }).catch(console.error);
       }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Video call failed:', err);
-      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(() => undefined);
-      if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (sessionId) await updateCallSession(sessionId, { status: 'missed', endedAt: Date.now(), transcriptEntries: null }).catch(() => undefined);
+      if (roomId && rtdb) await updateRealtime(realtimeRef(rtdb, `callRooms/${roomId}`), { status: 'ended', endedAt: Date.now() }).catch(() => undefined);
       webrtcRef.current?.dispose();
       webrtcRef.current = null;
       setActiveCallSessionId(null);
@@ -3118,7 +3106,9 @@ export default function App() {
       setActiveCallType(null);
       setLocalStream(null);
       setActiveVideoCall(false);
-      showToast('Could not start real video call');
+      showToast(err instanceof Error && err.message.includes('VITE_FIREBASE_DATABASE_URL')
+        ? 'Set the Realtime Database URL in your environment settings before calling'
+        : 'Could not start real video call');
     }
   };
 
@@ -3149,7 +3139,7 @@ export default function App() {
       await webrtcRef.current.initialize(user.uid, room.id);
       const stream = await webrtcRef.current.startLocalMedia(false, true, callSettings);
       webrtcRef.current.toggleAudio(callSettings.startWithMic);
-      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'voice');
+      const session = await WebRTCService.createCallSession(room.id, user.uid, calleeId, 'voice', profile?.displayName || 'Contact');
       sessionId = session.id;
       setActiveCallSessionId(session.id);
       setActiveCallType('voice');
@@ -3169,17 +3159,17 @@ export default function App() {
       callSignalingUnsubscribeRef.current?.();
       callSignalingUnsubscribeRef.current = attachCallerSignaling(room.id, calleeId);
       callTimeoutRef.current = window.setTimeout(() => {
-        void getDoc(doc(db, 'call_sessions', session.id)).then(callDoc => {
-          if (callDoc.exists() && callDoc.data().status === 'ringing') {
-            return updateDoc(callDoc.ref, { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() });
+        void getCallSession(session.id).then(callData => {
+          if (callData?.status === 'ringing') {
+            return updateCallSession(session.id, { status: 'missed', endedAt: Date.now(), transcriptEntries: null });
           }
         }).catch(console.error);
       }, 45_000);
       showToast('Calling contact...');
     } catch (err) {
       console.error('Voice call failed:', err);
-      if (sessionId) await updateDoc(doc(db, 'call_sessions', sessionId), { status: 'missed', endedAt: serverTimestamp(), transcriptEntries: deleteField() }).catch(() => undefined);
-      if (roomId) await updateDoc(doc(db, 'meeting_rooms', roomId), { status: 'ended', endedAt: serverTimestamp() }).catch(() => undefined);
+      if (sessionId) await updateCallSession(sessionId, { status: 'missed', endedAt: Date.now(), transcriptEntries: null }).catch(() => undefined);
+      if (roomId && rtdb) await updateRealtime(realtimeRef(rtdb, `callRooms/${roomId}`), { status: 'ended', endedAt: Date.now() }).catch(() => undefined);
       webrtcRef.current?.dispose();
       webrtcRef.current = null;
       setActiveCallSessionId(null);
@@ -3187,7 +3177,9 @@ export default function App() {
       setActiveCallType(null);
       setLocalStream(null);
       setActiveVideoCall(false);
-      showToast('Could not start real voice call');
+      showToast(err instanceof Error && err.message.includes('VITE_FIREBASE_DATABASE_URL')
+        ? 'Set the Realtime Database URL in your environment settings before calling'
+        : 'Could not start real voice call');
     }
   };
 
@@ -4892,10 +4884,10 @@ export default function App() {
     callSessionUnsubscribeRef.current = null;
     await webrtcRef.current?.endCall().catch(console.error);
     if (updateSessionStatus && activeCallSessionId) {
-      await updateDoc(doc(db, 'call_sessions', activeCallSessionId), {
+      await updateCallSession(activeCallSessionId, {
         status: 'ended',
-        endedAt: serverTimestamp(),
-        transcriptEntries: deleteField(),
+        endedAt: Date.now(),
+        transcriptEntries: null,
       }).catch(console.error);
     }
     webrtcRef.current = null;
@@ -7099,7 +7091,7 @@ export default function App() {
                       <p key={call.id} className="flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-500">
                         {call.type === 'video' ? <Video className="h-3.5 w-3.5 text-zinc-400" /> : <Phone className="h-3.5 w-3.5 text-zinc-400" />}
                         <span>{call.type === 'video' ? 'Video call' : 'Voice call'} · {call.status === 'missed' ? 'Missed' : call.status === 'ringing' ? 'No answer' : 'Completed'}</span>
-                        <time>{call.startedAt?.toDate ? format(call.startedAt.toDate(), 'MMM d, yyyy, h:mm a') : 'Time unavailable'}</time>
+                        <time>{format(typeof call.startedAt === 'number' ? new Date(call.startedAt) : call.startedAt.toDate(), 'MMM d, yyyy, h:mm a')}</time>
                       </p>
                     )) : <p className="mt-1 text-[11px] text-zinc-400">No call history</p>}
                   </div>

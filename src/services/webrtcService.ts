@@ -1,10 +1,7 @@
-import { db } from '../firebase';
-import {
-  arrayUnion, collection, doc, setDoc, updateDoc, onSnapshot,
-  serverTimestamp, query, where
-} from 'firebase/firestore';
+import { onValue, push, ref, set, update } from 'firebase/database';
 import type { MeetingRoom, CallSession, CallType } from '../types';
-import { AuditLogService } from './auditLogService';
+import { rtdb } from '../firebase';
+import { createCallSession as createRealtimeCallSession } from './callSessionService';
 
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -41,15 +38,17 @@ export class WebRTCService {
   }
 
   async initialize(userId: string, roomId: string): Promise<void> {
+    if (!rtdb) throw new Error('Call signaling is not configured. Set VITE_FIREBASE_DATABASE_URL to your Realtime Database URL.');
     this.userId = userId;
     this.roomId = roomId;
     this.peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     this.peerConnection.onicecandidate = async (event) => {
       if (event.candidate && this.roomId && this.userId) {
-        await updateDoc(doc(db, 'meeting_rooms', this.roomId), {
-          [`signaling.${this.userId}.iceCandidates`]: arrayUnion(event.candidate.toJSON()),
-        }).catch(() => null);
+        const candidateRef = push(ref(rtdb, `callRooms/${this.roomId}/signaling/${this.userId}/iceCandidates`));
+        await set(candidateRef, event.candidate.toJSON()).catch(error => {
+          console.error('Could not publish WebRTC ICE candidate:', error);
+        });
       }
     };
 
@@ -90,9 +89,8 @@ export class WebRTCService {
 
   async publishLocalDescription(type: 'offer' | 'answer', description: RTCSessionDescriptionInit): Promise<void> {
     if (!this.roomId || !this.userId) return;
-    await updateDoc(doc(db, 'meeting_rooms', this.roomId), {
-      [`signaling.${this.userId}.${type}`]: description,
-    });
+    if (!rtdb) throw new Error('Call signaling is not configured. Set VITE_FIREBASE_DATABASE_URL to your Realtime Database URL.');
+    await update(ref(rtdb, `callRooms/${this.roomId}/signaling/${this.userId}`), { [type]: description });
   }
 
   async startLocalMedia(
@@ -170,7 +168,7 @@ export class WebRTCService {
     if (sender) await sender.replaceTrack(videoTrack);
 
     if (this.roomId) {
-      await updateDoc(doc(db, 'meeting_rooms', this.roomId), { screenSharing: true });
+      if (rtdb) await update(ref(rtdb, `callRooms/${this.roomId}`), { screenSharing: true });
     }
     return screenStream;
   }
@@ -232,9 +230,9 @@ export class WebRTCService {
     this.dispose();
 
     if (this.roomId) {
-      await updateDoc(doc(db, 'meeting_rooms', this.roomId), {
+      if (rtdb) await update(ref(rtdb, `callRooms/${this.roomId}`), {
         status: 'ended',
-        endedAt: serverTimestamp(),
+        endedAt: Date.now(),
       }).catch(() => null);
     }
   }
@@ -245,69 +243,68 @@ export class WebRTCService {
     chatId?: string,
     invitedParticipantIds: string[] = []
   ): Promise<MeetingRoom> {
-    const roomRef = doc(collection(db, 'meeting_rooms'));
+    if (!rtdb) throw new Error('Call signaling is not configured. Set VITE_FIREBASE_DATABASE_URL to your Realtime Database URL.');
     const participants = Array.from(new Set([hostId, ...invitedParticipantIds].filter(Boolean)));
+    const roomRef = push(ref(rtdb, 'callRooms'));
+    if (!roomRef.key) throw new Error('Could not allocate a call room.');
     const room: MeetingRoom = {
-      id: roomRef.id,
+      id: roomRef.key,
       chatId,
       hostId,
       participants,
       type,
       status: 'waiting',
       screenSharing: false,
-      createdAt: serverTimestamp() as MeetingRoom['createdAt'],
+      createdAt: Date.now(),
     };
-    await setDoc(roomRef, room);
-
-    await AuditLogService.log(hostId, 'call_started', `Meeting room created: ${type}`, {
-      metadata: { roomId: roomRef.id, chatId },
+    await set(roomRef, {
+      hostId,
+      chatId: chatId || null,
+      type,
+      status: 'waiting',
+      screenSharing: false,
+      createdAt: room.createdAt,
+      participants: Object.fromEntries(participants.map(participantId => [participantId, true])),
     });
 
     return room;
   }
 
   static async joinMeetingRoom(roomId: string, userId: string): Promise<void> {
-    await updateDoc(doc(db, 'meeting_rooms', roomId), {
-      participants: arrayUnion(userId),
-      status: 'active',
-    });
+    if (!rtdb) throw new Error('Call signaling is not configured. Set VITE_FIREBASE_DATABASE_URL to your Realtime Database URL.');
+    await update(ref(rtdb, `callRooms/${roomId}`), { status: 'active' });
   }
 
   static async createCallSession(
     roomId: string,
     callerId: string,
     calleeId: string,
-    type: CallType
+    type: CallType,
+    callerDisplayName = '',
   ): Promise<CallSession> {
-    const callRef = doc(collection(db, 'call_sessions'));
-    const session: CallSession = {
-      id: callRef.id,
-      roomId,
-      callerId,
-      calleeId,
-      type,
-      status: 'ringing',
-      startedAt: serverTimestamp() as CallSession['startedAt'],
-    };
-    await setDoc(callRef, session);
-    return session;
+    return createRealtimeCallSession(roomId, callerId, calleeId, type, callerDisplayName);
   }
 
   static subscribeToRoom(
     roomId: string,
     callback: (room: MeetingRoom) => void
   ): () => void {
-    return onSnapshot(doc(db, 'meeting_rooms', roomId), (snap) => {
-      if (snap.exists()) callback({ id: snap.id, ...snap.data() } as MeetingRoom);
+    if (!rtdb) return () => undefined;
+    return onValue(ref(rtdb, `callRooms/${roomId}`), snap => {
+      if (!snap.exists()) return;
+      const value = snap.val();
+      callback({ ...value, id: roomId, participants: Object.keys(value.participants || {}) } as MeetingRoom);
     });
   }
 
   static subscribeToSignaling(
     roomId: string,
-    callback: (signaling: Record<string, unknown>) => void
+    callback: (signaling: Record<string, unknown>) => void,
+    onError?: (error: Error) => void,
   ): () => void {
-    return onSnapshot(doc(db, 'meeting_rooms', roomId), (snap) => {
-      if (snap.exists()) callback(snap.data().signaling ?? {});
-    });
+    if (!rtdb) return () => undefined;
+    return onValue(ref(rtdb, `callRooms/${roomId}/signaling`), snap => {
+      callback(snap.exists() ? snap.val() : {});
+    }, onError);
   }
 }

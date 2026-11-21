@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getDatabase, type Database } from 'firebase/database';
 import { 
   getAuth, 
   signOut, 
@@ -37,7 +38,10 @@ const firebaseConfig = {
   firestoreDatabaseId: firebaseConfigRaw.firestoreDatabaseId || '',
   storageBucket: firebaseConfigRaw.storageBucket || 'demo.appspot.com',
   messagingSenderId: firebaseConfigRaw.messagingSenderId || '123456789',
-  measurementId: firebaseConfigRaw.measurementId || ''
+  measurementId: firebaseConfigRaw.measurementId || '',
+  databaseURL: (firebaseConfigRaw as typeof firebaseConfigRaw & { databaseURL?: string }).databaseURL
+    || import.meta.env.VITE_FIREBASE_DATABASE_URL
+    || '',
 };
 
 const app = initializeApp(firebaseConfig);
@@ -48,6 +52,12 @@ export const auth = getAuth(app);
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
 }, firebaseConfig.firestoreDatabaseId || undefined);
+
+// Realtime Database is optional until its instance URL is configured in the
+// Firebase console and supplied as VITE_FIREBASE_DATABASE_URL.
+export const rtdb: Database | null = firebaseConfig.databaseURL
+  ? getDatabase(app, firebaseConfig.databaseURL)
+  : null;
 
 
 export enum OperationType {

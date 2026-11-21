@@ -19,6 +19,8 @@ services:
         value: "650"
       - key: NVIDIA_API_KEY
         sync: false
+      - key: VITE_FIREBASE_DATABASE_URL
+        sync: false
       - key: B2_KEY_ID
         sync: false
       - key: B2_APPLICATION_KEY
