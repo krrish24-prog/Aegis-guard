@@ -172,6 +172,21 @@ const ComingSoonBadge = ({ compact = false }: { compact?: boolean }) => (
   </span>
 );
 
+const hasProhibitedGroupName = (name: string) => {
+  const raw = name.normalize('NFKC').toLowerCase();
+  const normalized = raw
+    .replace(/0/g, 'o')
+    .replace(/[@4]/g, 'a')
+    .replace(/[1!]/g, 'i')
+    .replace(/3/g, 'e')
+    .replace(/[5$]/g, 's')
+    .replace(/7/g, 't')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const prohibitedTerms = /\b(?:hack(?:er|ing)?|phishing|malware|ransomware|exploit|porn(?:ography)?|nsfw|xxx|adult|sex(?:ual)?|nudes?|onlyfans)\b/;
+  return prohibitedTerms.test(normalized) || /\b18\s*(?:\+|plus|and\s+over)(?=\s|$)/i.test(raw);
+};
+
 const showComingSoonNotice = (feature: string) => {
   alert(`${feature} is coming soon. This option is currently locked until the full feature is ready.`);
 };
@@ -848,7 +863,9 @@ export default function App() {
   const [showNewChat, setShowNewChat] = useState(false);
   const [showNewGroup, setShowNewGroup] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
+  const [groupNameError, setGroupNameError] = useState('');
   const [selectedGroupParticipants, setSelectedGroupParticipants] = useState<string[]>([]);
+  const [groupParticipantProfiles, setGroupParticipantProfiles] = useState<Record<string, UserProfile>>({});
   const [isCreatingGroup, setIsCreatingGroup] = useState(false);
   const [groupMemberSearch, setGroupMemberSearch] = useState('');
   const [showClearChatOptions, setShowClearChatOptions] = useState(false);
@@ -1145,7 +1162,13 @@ export default function App() {
   };
 
   const createGroup = async () => {
-    if (!newGroupName.trim() || !user) return;
+    const groupName = newGroupName.trim();
+    if (!groupName || !user) return;
+    if (hasProhibitedGroupName(groupName)) {
+      setGroupNameError('This group name is not allowed. Please change the name and try again.');
+      return;
+    }
+    setGroupNameError('');
     const selectedUids = Array.from(new Set(selectedGroupParticipants)).filter(uid =>
       uid !== user.uid && groupMemberOptions.some(candidate => candidate.uid === uid)
     );
@@ -1153,7 +1176,7 @@ export default function App() {
     try {
       // Perform security analysis on the group before creation
       const verification = await SecurityService.analyzeGroup(
-        newGroupName, 
+        groupName,
         selectedUids.length + 1,
         `Created by ${profile?.displayName || user.email}`
       );
@@ -1162,7 +1185,7 @@ export default function App() {
       await setDoc(chatRef, {
         id: chatRef.id,
         type: 'group',
-        groupName: newGroupName,
+        groupName,
         participants: [user.uid, ...selectedUids],
         updatedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
@@ -1177,6 +1200,7 @@ export default function App() {
       setSelectedChatId(chatRef.id);
       setShowNewGroup(false);
       setNewGroupName('');
+      setGroupNameError('');
       setSelectedGroupParticipants([]);
       setGroupMemberSearch('');
     } catch (error) {
@@ -5085,6 +5109,74 @@ export default function App() {
   // --- Render Helpers ---
 
   const selectedChat = useMemo(() => chats.find(c => c.id === selectedChatId), [chats, selectedChatId]);
+
+  useEffect(() => {
+    if (!showParticipants || !user || selectedChat?.type !== 'group') return;
+    let cancelled = false;
+    const participants = Array.from(new Set((selectedChat.participants || []).map(id => id.trim()).filter(Boolean)));
+    const findCachedProfile = (id: string) => {
+      const lowerId = id.toLowerCase();
+      return allUsers.find(candidate => candidate.uid === id || candidate.email?.toLowerCase() === lowerId)
+        || syncedContacts.find(candidate => candidate.uid === id || candidate.email?.toLowerCase() === lowerId || candidate.phoneNumber === id)
+        || groupParticipantProfiles[id]
+        || groupParticipantProfiles[lowerId];
+    };
+    const missing = participants.filter(id => id !== user.uid && id.toLowerCase() !== user.email?.toLowerCase() && !findCachedProfile(id));
+    if (!missing.length) return;
+
+    void Promise.all(missing.map(async id => {
+      try {
+        if (id.includes('@')) {
+          const snapshot = await getDocs(query(collection(db, 'users_public'), where('email', '==', id.toLowerCase()), limit(1)));
+          return snapshot.empty ? null : { id, profile: { uid: snapshot.docs[0].id, ...snapshot.docs[0].data() } as UserProfile };
+        }
+        const snapshot = await getDoc(doc(db, 'users_public', id));
+        return snapshot.exists() ? { id, profile: { uid: snapshot.id, ...snapshot.data() } as UserProfile } : null;
+      } catch (error) {
+        console.warn('Could not resolve group member profile:', error);
+        return null;
+      }
+    })).then(results => {
+      if (cancelled) return;
+      setGroupParticipantProfiles(previous => {
+        const next = { ...previous };
+        results.forEach(result => {
+          if (!result) return;
+          next[result.id] = result.profile;
+          next[result.profile.uid] = result.profile;
+          if (result.profile.email) next[result.profile.email.toLowerCase()] = result.profile;
+        });
+        return next;
+      });
+    });
+    return () => { cancelled = true; };
+  }, [showParticipants, selectedChat?.id, selectedChat?.participants, selectedChat?.type, user, allUsers, syncedContacts, groupParticipantProfiles]);
+
+  const groupParticipantRows = useMemo(() => {
+    if (!user || selectedChat?.type !== 'group') return [];
+    const seen = new Set<string>();
+    return (selectedChat.participants || []).flatMap(rawId => {
+      const id = rawId.trim();
+      if (!id || id.startsWith('temp-')) return [];
+      const lowerId = id.toLowerCase();
+      const memberProfile = allUsers.find(candidate => candidate.uid === id || candidate.email?.toLowerCase() === lowerId)
+        || syncedContacts.find(candidate => candidate.uid === id || candidate.email?.toLowerCase() === lowerId || candidate.phoneNumber === id)
+        || groupParticipantProfiles[id]
+        || groupParticipantProfiles[lowerId]
+        || (id === user.uid || lowerId === user.email?.toLowerCase() ? profile : undefined);
+      const email = memberProfile?.email?.toLowerCase() || (id.includes('@') ? lowerId : '');
+      const identity = (memberProfile?.uid || email || lowerId).toLowerCase();
+      if (seen.has(identity)) return [];
+      seen.add(identity);
+      const isSelf = identity === user.uid.toLowerCase() || (email && email === user.email?.toLowerCase());
+      return [{
+        id: identity,
+        name: memberProfile?.displayName?.trim() || email || (isSelf ? 'You' : 'Group member'),
+        detail: isSelf ? 'You' : email || 'Profile unavailable',
+        photoURL: memberProfile?.photoURL || '',
+      }];
+    });
+  }, [selectedChat, user, profile, allUsers, syncedContacts, groupParticipantProfiles]);
 
   // A new chat always starts in "Send to Everyone" mode.
   useEffect(() => {
@@ -9383,6 +9475,7 @@ export default function App() {
                 <button onClick={() => {
                   setShowNewGroup(false);
                   setNewGroupName('');
+                  setGroupNameError('');
                   setSelectedGroupParticipants([]);
                   setGroupMemberSearch('');
                 }} className="text-zinc-400 hover:text-zinc-600">
@@ -9395,10 +9488,14 @@ export default function App() {
                   <input 
                     type="text" 
                     value={newGroupName}
-                    onChange={(e) => setNewGroupName(e.target.value)}
+                    onChange={(e) => {
+                      setNewGroupName(e.target.value);
+                      setGroupNameError('');
+                    }}
                     placeholder="Enter group name..."
                     className="w-full px-4 py-3 bg-zinc-50 border border-zinc-100 rounded-xl focus:ring-2 focus:ring-emerald-500/20 transition-all"
                   />
+                  {groupNameError && <p role="alert" className="text-xs font-medium text-red-600">{groupNameError}</p>}
                 </div>
 
                 <div className="relative">
@@ -9446,7 +9543,7 @@ export default function App() {
                               {u.photoURL ? <img src={u.photoURL} className="w-full h-full object-cover" alt="" /> : <UserIcon className="w-4 h-4 text-zinc-500" />}
                             </div>
                             <div className="text-left min-w-0">
-                              <p className="text-sm font-bold truncate">{u.displayName}</p>
+                              <p className="text-sm font-bold truncate">{u.displayName || u.email || 'Member'}</p>
                               <p className="text-[10px] text-zinc-400 truncate">{u.email}</p>
                             </div>
                           </div>
@@ -9804,23 +9901,19 @@ export default function App() {
                 </button>
               </div>
               <div className="space-y-4">
-                {(selectedChat.participants || []).map(p => {
-                    let profile: any = allUsers.find(u => u.email === p);
-                    if (!profile) {
-                      profile = syncedContacts.find(c => c.phoneNumber === p || c.email === p || c.uid === p || c.displayName === p);
-                    }
-                    return (
-                        <div key={p} className="flex items-center gap-3">
-                         <div className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center overflow-hidden">
-                             {profile?.photoURL ? <img src={profile.photoURL} className="w-full h-full object-cover" alt="" /> : <UserIcon className="w-5 h-5 text-zinc-500" />}
-                         </div>
-                         <div>
-                             <p className="text-sm font-bold">{profile?.displayName || p}</p>
-                             <p className="text-[10px] text-zinc-400">{p}</p>
-                         </div>
-                        </div>
-                    )
-                })}
+                {groupParticipantRows.map(member => (
+                  <div key={member.id} className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-zinc-100 rounded-full flex items-center justify-center overflow-hidden">
+                      {member.photoURL
+                        ? <img src={member.photoURL} className="w-full h-full object-cover" alt="" />
+                        : <UserIcon className="w-5 h-5 text-zinc-500" />}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold truncate">{member.name}</p>
+                      <p className="text-[10px] text-zinc-400 truncate">{member.detail}</p>
+                    </div>
+                  </div>
+                ))}
               </div>
             </motion.div>
           </div>
