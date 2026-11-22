@@ -6933,14 +6933,6 @@ export default function App() {
           </div>
           <div className="flex gap-3">
             <button 
-              onClick={() => showComingSoonNotice('Scheduled calls')}
-              className="px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-all flex items-center gap-2"
-            >
-              <Phone className="w-4 h-4" />
-              Schedule Call
-              <ComingSoonBadge compact />
-            </button>
-            <button 
               onClick={() => setShowScheduleModal('meeting')}
               className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-all flex items-center gap-2"
             >
